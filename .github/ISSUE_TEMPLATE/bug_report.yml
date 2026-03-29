@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem in RefactorPilot
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report this. Please include enough detail for us to reproduce the issue locally.
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Describe the bug and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Paste the commands, fixture, or repo shape needed to reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Environment
+      description: OS, Node version, and any relevant toolchain details.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs or screenshots
+      description: Paste any relevant output from `refactorpilot doctor`, stack traces, or screenshots.

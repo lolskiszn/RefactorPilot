@@ -1,0 +1,30 @@
+{
+  "name": "@refactorpilot/pattern-django-to-fastapi",
+  "version": "1.0.0",
+  "description": "Local example plugin for migrating Django-style Python apps toward FastAPI.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "plugin.json"
+  ],
+  "keywords": [
+    "refactorpilot",
+    "plugin",
+    "pattern",
+    "django",
+    "fastapi",
+    "python"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

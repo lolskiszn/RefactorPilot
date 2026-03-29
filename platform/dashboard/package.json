@@ -1,0 +1,12 @@
+{
+  "name": "refactorpilot-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Next.js dashboard scaffold for RefactorPilot platform analytics.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "pattern:django-to-fastapi",
+  "language": "python",
+  "name": "Django to FastAPI",
+  "type": "pattern",
+  "version": "1.0.0"
+}

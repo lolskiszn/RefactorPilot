@@ -1,0 +1,22 @@
+0 verbose cli C:\nvm4w\nodejs\node.exe C:\nvm4w\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.4.2
+2 info using node@v24.4.1
+3 silly config load:file:C:\Users\geeme\AppData\Local\nvm\v24.4.1\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\geeme\.npmrc
+5 silly config load:file:C:\Users\geeme\Desktop\RefactorPilot\.publish-prefix\etc\npmrc
+6 verbose title npm install .
+7 verbose argv "install" "--global" "." "--prefix" "C:\\Users\\geeme\\Desktop\\RefactorPilot\\.publish-prefix" "--cache" ".\\.npm-cache"
+8 verbose logfile logs-max:10 dir:C:\Users\geeme\Desktop\RefactorPilot\.npm-cache\_logs\2026-03-29T00_18_57_994Z-
+9 verbose logfile C:\Users\geeme\Desktop\RefactorPilot\.npm-cache\_logs\2026-03-29T00_18_57_994Z-debug-0.log
+10 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+11 silly logfile done cleaning log files
+12 silly idealTree buildDeps
+13 silly placeDep ROOT refactor-pilot@0.1.0 OK for:  want: file:..
+14 silly reify moves {}
+15 silly ADD node_modules/refactor-pilot
+16 verbose cwd C:\Users\geeme\Desktop\RefactorPilot
+17 verbose os Windows_NT 10.0.26200
+18 verbose node v24.4.1
+19 verbose npm  v11.4.2
+20 verbose exit 0
+21 info ok

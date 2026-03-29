@@ -1,0 +1,56 @@
+:root {
+  --bg: #f5efe4;
+  --card: #fffdf7;
+  --ink: #1c2b2b;
+  --accent: #0e766e;
+  --line: #d8cdbb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #faf6ee 0%, var(--bg) 100%);
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 20px 60px;
+}
+
+.hero {
+  background: linear-gradient(135deg, #153f3c 0%, #0e766e 60%, #82c7bd 100%);
+  color: white;
+  border-radius: 22px;
+  padding: 28px;
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.card,
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.card strong {
+  display: block;
+  font-size: 1.9rem;
+  color: var(--accent);
+}

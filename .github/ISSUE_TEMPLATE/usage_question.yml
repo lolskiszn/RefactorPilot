@@ -1,0 +1,22 @@
+name: Usage question
+description: Ask for help with installation, commands, or supported migration workflows
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: textarea
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow, repo shape, or migration you want to run.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Command or setup
+      description: Paste the command, config, or install method you are using.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Include the output you saw and what you expected instead.

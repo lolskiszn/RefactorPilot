@@ -1,0 +1,29 @@
+{
+  "name": "happy-path",
+  "workspace": "workspace",
+  "rename": {
+    "from": "user_id",
+    "to": "account_id"
+  },
+  "expected": {
+    "category": "unambiguous",
+    "impactedFiles": [
+      "server.go",
+      "client.py"
+    ],
+    "edits": [
+      {
+        "file": "server.go",
+        "before": "user_id",
+        "after": "account_id"
+      },
+      {
+        "file": "client.py",
+        "before": "user_id",
+        "after": "account_id"
+      }
+    ],
+    "allowApply": true,
+    "rollbackProbeIndex": 1
+  }
+}

@@ -1,0 +1,15 @@
+readOnly: true
+commentOnPullRequest: true
+createCheckRuns: true
+autoResolve: false
+coordinated: false
+patterns:
+  - api-contract-rename
+  - rest-to-grpc
+ignoredPaths:
+  - "**/*.md"
+  - "docs/**"
+  - "node_modules/**"
+review:
+  includePreviewCommand: true
+  includeDoctorCommand: true

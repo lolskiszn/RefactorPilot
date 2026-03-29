@@ -1,0 +1,10 @@
+RefactorPilot Third-Party Licenses
+==================================
+
+Generated: 2026-03-28T18:30:00.535Z
+
+Runtime dependencies: 0
+Development dependencies: 0
+
+This repository currently ships without npm runtime or development dependencies.
+All distributed source files are authored within this repository and licensed under MIT unless otherwise noted.

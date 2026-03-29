@@ -1,0 +1,30 @@
+export const NODE_KINDS = Object.freeze({
+  API_ENDPOINT: 'api.endpoint',
+  CLASS: 'class',
+  CODE_BLOCK: 'code.block',
+  DATA_FIELD: 'data.field',
+  DATA_SCHEMA: 'data.schema',
+  FILE: 'file',
+  FUNCTION: 'function',
+  INTERFACE: 'interface',
+  METHOD: 'method',
+  MODULE: 'module',
+  PARAMETER: 'parameter',
+  PROGRAM: 'program',
+  SERVICE: 'service',
+  STRUCT: 'struct',
+  SYMBOL: 'symbol',
+  VARIABLE: 'variable',
+});
+
+export const EDGE_KINDS = Object.freeze({
+  CALLS: 'calls',
+  CONTAINS: 'contains',
+  CROSSES_BOUNDARY: 'crosses_boundary',
+  DECLARES: 'declares',
+  DEPENDS_ON: 'depends_on',
+  FLOWS_TO: 'flows_to',
+  MAPS_TO: 'maps_to',
+  REFERENCES: 'references',
+  SERIALIZES_TO: 'serializes_to',
+});

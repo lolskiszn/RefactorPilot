@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RefactorPilot</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">RefactorPilot</p>
+          <h1>Preview and apply cross-language refactors.</h1>
+          <p class="lede">
+            Scan Go and Python workspaces, inspect the impact graph, and safely
+            rename payload fields with backups and rollback.
+          </p>
+        </div>
+        <div class="hero-card">
+          <label>Workspace</label>
+          <input id="workspace" type="text" spellcheck="false" />
+          <div class="row">
+            <button id="scan-btn" type="button">Scan</button>
+            <button id="preview-btn" type="button">Preview</button>
+            <button id="apply-btn" class="primary" type="button">Apply</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Rename</h2>
+          <label>Field</label>
+          <input id="field" type="text" value="user_id" spellcheck="false" />
+          <label>To</label>
+          <input id="to" type="text" value="account_id" spellcheck="false" />
+          <p class="hint">Preview is read-only. Apply writes with backup and rollback.</p>
+        </article>
+
+        <article class="panel">
+          <h2>Summary</h2>
+          <div id="summary" class="summary"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>Warnings</h2>
+          <div id="warnings" class="stack"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>Impacted Files</h2>
+          <div id="impacted" class="stack"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>Replacement Preview</h2>
+          <div id="replacements" class="stack"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>Apply Result</h2>
+          <div id="result" class="stack"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

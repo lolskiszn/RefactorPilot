@@ -1,0 +1,17 @@
+{
+  "name": "@refactorpilot/language-typescript",
+  "version": "1.0.0",
+  "description": "Built-in TypeScript/JavaScript frontend for RefactorPilot.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

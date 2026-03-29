@@ -1,0 +1,75 @@
+{
+  "name": "refactor-pilot",
+  "version": "0.1.1",
+  "description": "Preview-first architectural refactoring CLI for Go, Python, and TypeScript codebases.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "refactor-pilot": "src/cli/index.js",
+    "refactorpilot": "src/cli/index.js"
+  },
+  "files": [
+    "src",
+    "patterns",
+    "packages",
+    "benchmarks",
+    "docs",
+    "examples",
+    "README.md",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "SECURITY.md",
+    "third-party-licenses.txt"
+  ],
+  "scripts": {
+    "test": "node ./tests/run-tests.js",
+    "scan": "node ./src/cli/index.js scan .",
+    "plan:rename": "node ./src/cli/index.js plan-rename . --field user_id --to account_id",
+    "preview": "node ./src/cli/index.js preview . --field user_id --to account_id",
+    "apply": "node ./src/cli/index.js apply . --field user_id --to account_id --mode dry-run",
+    "serve": "node ./src/cli/index.js serve . --port 3333",
+    "bench": "node ./benchmarks/run.js",
+    "test:confidence": "node ./tests/confidence/calibration.test.js",
+    "test:differential": "node ./tests/differential/differential.test.js",
+    "test:enterprise": "node ./tests/platform/enterprise.test.js",
+    "test:marketplace": "node ./tests/platform/marketplace.test.js",
+    "test:matrix": "node ./tests/scenarios/run-matrix.js",
+    "test:auto-resolve": "node ./tests/scenarios/auto-resolve-matrix.js",
+    "test:dynamic-analysis": "node ./tests/scenarios/dynamic-access-matrix.js",
+    "test:patterns": "node ./tests/patterns/rest-to-grpc.test.js",
+    "test:pattern-matrix": "node ./tests/scenarios/run-pattern-matrix.js",
+    "test:interactive": "node ./tests/cli/interactive.test.js",
+    "test:distributed": "node ./tests/orchestration/distributed-planner.test.js",
+    "test:plugins": "node ./tests/plugins/registry.test.js",
+    "test:plugin-sdk": "node ./tests/plugins/sdk.test.js",
+    "test:plugin-patterns": "node ./tests/patterns/plugin-patterns.test.js",
+    "test:deployment": "node ./tests/deployment/run.js",
+    "test:performance": "node ./tests/benchmarks/performance.test.js",
+    "test:rest-to-grpc-full": "node ./tests/patterns/rest-to-grpc-full.test.js",
+    "test:transformers": "node ./tests/transformers/complex-cases.test.js && node ./tests/transformers/framework-matrix.test.js && node ./tests/transformers/real-world-patterns.test.js && node ./tests/transformers/launch-readiness-matrix.test.js && node ./tests/transformers/unsupported-patterns.test.js",
+    "test:verified-transformation": "node ./tests/verified-transformation/end-to-end.test.js",
+    "test:typescript": "node ./tests/typescript/analyzer.test.js && node ./tests/typescript/integration.test.js",
+    "verify:standalone": "node ./scripts/verify-standalone.js",
+    "bundle": "node ./scripts/bundle.js",
+    "licenses": "node ./scripts/generate-third-party-licenses.js",
+    "prepublishOnly": "node ./tests/run-tests.js && node ./tests/transformers/launch-readiness-matrix.test.js && node ./tests/transformers/unsupported-patterns.test.js && node ./scripts/verify-standalone.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "cli",
+    "refactoring",
+    "go",
+    "python",
+    "typescript",
+    "grpc",
+    "api-migration",
+    "static-analysis",
+    "developer-tools"
+  ]
+}

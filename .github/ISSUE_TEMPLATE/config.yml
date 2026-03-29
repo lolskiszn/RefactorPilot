@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage question
+    url: https://www.npmjs.com/package/refactor-pilot
+    about: Start with the package page and README examples for install and usage questions.
+  - name: Security reports
+    url: mailto:security@refactorpilot.dev
+    about: Please report vulnerabilities privately.

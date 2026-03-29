@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a pattern, safety improvement, or contributor workflow enhancement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: Use this template for new patterns, safety improvements, UX polish, and contributor workflow ideas.
+  - type: textarea
+    attributes:
+      label: Problem
+      description: What workflow or pain point should RefactorPilot improve?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want to see.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Example workflow
+      description: Show the command, repo shape, or migration flow this would improve.

@@ -1,0 +1,25 @@
+{
+  "name": "@refactorpilot/language-sdk",
+  "version": "1.0.0",
+  "description": "Language frontend SDK for RefactorPilot plugins.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "templates"
+  ],
+  "keywords": [
+    "refactorpilot",
+    "sdk",
+    "plugin",
+    "parser",
+    "frontend"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
