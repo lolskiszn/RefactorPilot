@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\libimpl\heapqlib.py
+# hypothesis_version: 6.151.10
+
+['_heapify_max', '_heappop_max', '_heapq', '_heapreplace_max', 'heapify', 'heappop', 'heappush', 'heappushpop', 'heapq', 'heapreplace']

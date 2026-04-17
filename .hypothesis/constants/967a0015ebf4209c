@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\typeshed_client\finder.py
+# hypothesis_version: 6.151.10
+
+['#', '-', '-c', '-stubs', '.', '.py', '.pyi', '2and3', ': ', '@python2', 'ModulePath', 'VERSIONS', '__init__.py', '__init__.pyi', 'os.PathLike[str]', 'py', 'pyi', 'stdlib', 'third_party', 'typeshed', 'typeshed_client', 'utf-8']

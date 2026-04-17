@@ -1,0 +1,2895 @@
+================================================================================
+REFACTORPILOT — FULL RESEARCH DOSSIER AND DEVELOPMENT GUIDE
+================================================================================
+Version: April 2026
+Scope: All 8 research vectors + complete application architecture
+Audience: Developer building a source-to-source transformation validator
+
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+PART A: RESEARCH
+  1. Translation Validation for Source-to-Source Transformation
+  2. Abstract Interpretation for Refusal Boundaries
+  3. Relational Verification and Equivalence Checking
+  4. Counterexample-Guided Synthesis and Repair (CEGIS / SyGuS / SemGuS)
+  5. E-Graphs and Equality Saturation
+  6. Python Semantic Tooling Beyond Syntax
+  7. Go Semantic and Editor-Quality Transformation
+  8. Property-Based and Fuzz Differential Validation
+
+PART B: APPLICATION DEVELOPMENT
+  9.  Overall Architecture of RefactorPilot
+  10. Module 1: Pre-Flight Classifier
+  11. Module 2: Transformation Engine
+  12. Module 3: Differential Fuzz Validator (Fast Layer)
+  13. Module 4: SMT / Formal Validator
+  14. Module 5: CEGIS Repair Loop
+  15. Module 6: E-Graph Canonicalization
+  16. Technology Stack Recommendations
+  17. Implementation Roadmap and Milestones
+  18. Key Search Terms Reference
+
+
+================================================================================
+PART A: RESEARCH
+================================================================================
+
+
+--------------------------------------------------------------------------------
+SECTION 1 — TRANSLATION VALIDATION FOR SOURCE-TO-SOURCE TRANSFORMATION
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Translation validation is a paradigm where instead of proving that a compiler
+or transformer is correct in general, you validate each specific run of the
+transformer. For every input-output program pair produced by the transformation,
+you check whether that specific pair is semantically correct. This was formally
+named and introduced by Pnueli, Siegel, and Singerman (1998) and has since
+become the dominant pragmatic approach for industrial-strength compiler
+verification.
+
+The critical distinction: you do not need to prove the transformer correct
+globally. You prove each instance correct. For RefactorPilot, this is ideal
+because your transformer (an LLM or rule engine) cannot feasibly be formally
+verified as a whole — but every concrete refactored file can be checked.
+
+THE FOUNDATIONAL PAPER: NECULA (PLDI 2000)
+------------------------------------------
+George Necula's paper "Translation Validation for an Optimizing Compiler"
+(PLDI 2000, ACM SIGPLAN Notices 35:5) built the first practical translation
+validator. Applied to the GCC compiler, it compared the intermediate form of
+the program before and after each compiler pass and verified preservation of
+semantics. The core technique: define a simulation relation between source and
+target program states, then prove inductively that the relation is maintained.
+
+Key insight from Necula: the validator itself is simpler to build than the
+compiler. You only need to check structure-preserving transformations (where
+the basic block structure matches), which is realistic for most refactoring.
+
+The VOC / TVOC line of work extended this to handle more optimizations.
+TVOC (Zuck, Pnueli, Goldberg, Levin - TACAS 2005) introduced "witnesses" for
+transformations — additional invariant annotations that the validator checks
+rather than infers. For RefactorPilot: a transformation engine can annotate
+its output with witnesses (e.g., "variable X in the original corresponds to
+variable Y in the refactored code") which the validator can verify cheaply.
+
+ALIVE AND ALIVE2: THE STATE OF THE ART
+---------------------------------------
+Alive (Lopes, Menendez, Nagarakatte, Regehr — PLDI 2015) introduced a
+domain-specific language for specifying LLVM peephole optimization patterns.
+Each rewrite rule in Alive has both a specification (what it does) and a
+correctness condition (when it is safe). Alive uses the Z3 SMT solver to
+automatically verify that each rule preserves LLVM IR semantics, including
+correct handling of poison values, undef, and undefined behavior.
+
+Alive2 (Lopes, Lee, Hur, Liu, Regehr — PLDI 2021) is the successor and
+represents the complete state of the art for IR-level translation validation.
+Critical properties of Alive2:
+
+  1. BOUNDED VALIDATION — Alive2 unrolls loops up to a configurable bound and
+     caps both time and memory per verification task. This means it may miss
+     some bugs in loop-heavy code but never hangs indefinitely. Every query
+     either returns "correct", "incorrect + counterexample", or "timeout". The
+     zero-false-alarm guarantee is preserved: it only reports a bug when it
+     is certain.
+
+  2. REFINEMENT NOT EQUALITY — Alive2 checks semantic refinement, not strict
+     equality. The target is allowed to have strictly fewer behaviors than the
+     source (e.g., it may eliminate some undefined behavior). The target is
+     not allowed to introduce new behaviors. Formally: for any concrete input,
+     if the target terminates with some output, the source must terminate with
+     the same output. This is the correct semantic model for refactoring.
+
+  3. SMT ENCODING OF MEMORY MODEL — Alive2 encodes LLVM's memory model
+     completely in SMT. Each memory block is a distinct entity. Pointers are
+     (block_id, offset) pairs. It handles aliasing, poison values, undef, and
+     undefined behavior through carefully constructed SMT constraints. This
+     encoding required significant engineering — the team special-cased
+     semantics for 117 library function pairs.
+
+  4. AUTOMATIC AND ZERO-CONFIGURATION — Alive2 runs as a Clang/opt plugin
+     with no code changes required. It hooks into LLVM's pass manager and
+     validates each optimization pass in sequence. For RefactorPilot: this
+     hook-based architecture is the right model — wrap your transformation
+     call and validate the before/after pair.
+
+  5. REAL BUG DISCOVERY — Running over LLVM's own test suite, Alive2 found 47
+     new bugs, 28 of which were fixed. Running continuously it has found and
+     continues to find bugs in production LLVM. Eight patches were made to
+     LLVM's official language reference specification as a direct result.
+
+Alive2 is open source at github.com/AliveToolkit/alive2. It requires building
+against the latest LLVM from the main branch. The Z3 SMT solver is the
+primary backend. The online demo is at alive2.llvm.org/ce/.
+
+TECHNICAL ARCHITECTURE OF ALIVE2 (STUDY THIS DEEPLY)
+------------------------------------------------------
+Alive2's translation validation plugin works as follows:
+
+  Step 1: IR Snapshot. Before any optimization, Alive2 captures a snapshot
+          of the LLVM IR as an Alive2 IR object.
+
+  Step 2: Optimization runs. LLVM's pass manager runs the optimization.
+
+  Step 3: Post-optimization IR capture. Alive2 translates the optimized IR
+          into its own IR format.
+
+  Step 4: Refinement check. The core Alive2 engine checks whether the post-
+          optimization IR semantically refines the pre-optimization IR.
+          This is encoded as: does there exist any input on which the two
+          programs produce different observable outputs? The SMT solver
+          searches for such a counterexample.
+
+  Step 5: Reporting. If found: print counterexample. If not: verified.
+          If timeout: report as unknown.
+
+For batched optimization (multiple passes between validation points), Alive2
+accumulates transformations and validates the pair (source_before_batch,
+source_after_batch). This has a slight risk of hiding individual-pass bugs.
+
+The memory model in Alive2 tracks:
+  - Memory blocks (one per stack variable, global, malloc call)
+  - Block IDs (non-negative integers; null is block 0)
+  - Pointer representation: (block_id concatenated with offset) as bit-vector
+  - Undef and poison as special symbolic values
+  - The out-of-bounds violation assumption (OBVA): accesses outside allocated
+    regions are undefined behavior
+
+For RefactorPilot's purposes, you need a simplified version of this memory
+model that captures Python and Go semantics. Key Python-specific concerns:
+reference counting vs. garbage collection, mutable default arguments, aliasing
+through assignment (a = b; a.x = 1 mutates via both names).
+
+LLM + ALIVE2 HYBRID (2024)
+---------------------------
+Paper: "Enhancing Translation Validation of Compiler Transformations with LLMs"
+arXiv:2401.16797 (Feb 2024)
+
+This paper presents the architecture you should copy for RefactorPilot's
+fallback system. The workflow:
+
+  1. Run Alive2 (or your formal validator). If it succeeds: done.
+  2. If SMT solver times out or gives "unknown": pass the transformation
+     to a fine-tuned LLM for soundness prediction.
+  3. The LLM classifies the transformation as likely-sound or likely-unsound.
+  4. For likely-unsound predictions: run fuzzing to find concrete counterexamples.
+  5. Report: confirmed-sound, confirmed-unsound+example, or uncertain.
+
+The dataset used had 32,850 sound transformations and 405 unsound ones. The
+imbalance is real and matters: most transformations in practice are sound, so
+your model needs careful handling of class imbalance.
+
+The LLM predicts specific unsoundness reasons: memory issues, return value
+divergence, or new undefined behavior introduction. This structured prediction
+improves the subsequent fuzzing by targeting the likely failure mode.
+
+COMPCERT: THE GLOBALLY VERIFIED APPROACH
+-----------------------------------------
+CompCert (Leroy et al.) is a compiler for C where every compilation pass is
+proven correct using Coq theorem proofs. The proofs establish semantic
+preservation: for any C program and any input, the compiled assembly produces
+the same observable behavior.
+
+CompCert is relevant to study for:
+
+  a) Its semantic framework: CompCert defines operational semantics for C
+     programs and assembly programs, then proves that compilation preserves
+     a simulation relation between them. The formal definition of what
+     "semantics preservation" means is worth studying.
+
+  b) Its middle-end validation: Barthe, Demange, and Pichardie (TOPLAS 2014)
+     formally verified CompCert's SSA-based middle end. This paper is important
+     because it shows how to handle a more complex, non-trivial intermediate
+     representation — closer to source-level Python or Go semantics than
+     pure SSA is to machine code.
+
+  c) Verified peephole optimizations: Mullen, Zuniga, Tatlock, Grossman
+     (PLDI 2016) applied Alive-style verified peephole optimization to
+     CompCert. This is the intersection of global verification and per-rule
+     validation.
+
+The limitation: CompCert requires high manual overhead. Each proof is
+developed once. This is viable for a well-defined compiler but not for a
+product where transformations change daily. This is precisely why per-instance
+validation (Alive2 style) is the right model for RefactorPilot.
+
+MLIR-TV: EXTENDING VALIDATION TO MULTI-LEVEL IR
+-------------------------------------------------
+MLIR-TV applies translation validation at the MLIR level. MLIR is a compiler
+infrastructure that supports multiple levels of abstraction simultaneously.
+MLIR-TV handles verification of transformations between MLIR dialects.
+
+This is relevant because: Python transformations can be thought of as
+operating at a "high-level" IR level, analogous to an MLIR dialect. If
+RefactorPilot internally normalizes Python to a structured IR before
+validation, MLIR-TV's architecture is the right reference.
+
+The validation hierarchy in the literature is:
+  - CompCert: C source to assembly (globally proven)
+  - Alive/Alive2: LLVM IR (per-instance validation)
+  - PolyCheck: affine C transformations
+  - MLIR-TV: MLIR-level transformations
+  - RefactorPilot target: Python/Go source level (needs to be built)
+
+GCC PYSMTGCC: SOURCE-LEVEL ANALOG
+-----------------------------------
+The pysmtgcc project (Krister Walfridsson, 2022, blog: kristerw.github.io)
+built a Python prototype of an Alive2-style validator for GCC's GIMPLE IR.
+It found real GCC bugs including bugs 106513, 106523, 106744, 106883, 106884,
+106990, 108625, and 109626.
+
+The validator checks that tgt is a refinement of src:
+  - The returned value is the same for all inputs that don't trigger UB
+  - The target doesn't have new UB that the source doesn't have
+  - Global memory state is identical after both functions complete
+
+This is exactly the specification you want for RefactorPilot. The fact that
+it was implemented in Python using an SMT solver makes it directly portable.
+
+KEY ARCHITECTURE INSIGHT: WITNESSES
+-------------------------------------
+One of the most practically important ideas in translation validation is the
+use of "witnesses" — annotations added by the transformer that assist the
+validator. Pnueli et al. introduced the concept: instead of requiring the
+validator to infer the variable correspondence (which mapping of source
+variables to target variables makes them equivalent), the transformer can
+annotate its output with the correspondence.
+
+For RefactorPilot: your LLM or rule engine can output, alongside the
+transformed code, a JSON structure that says:
+  - This function in the output corresponds to that function in the input
+  - This variable in the output corresponds to that variable in the input
+  - This loop in the output corresponds to that loop in the input
+
+With this witness, validation reduces from a discovery problem (find the
+correspondence) to a checking problem (verify the given correspondence),
+which is dramatically easier.
+
+EXACT SEARCH TERMS FOR SECTION 1
+----------------------------------
+"translation validation source-to-source"
+"Alive2 LLVM refinement SMT bounded"
+"Necula translation validation GCC PLDI 2000"
+"CompCert semantic preservation Coq"
+"Pnueli Siegel Singerman translation validation TACAS 1998"
+"MLIR-TV translation validation multi-level"
+"pysmtgcc GCC GIMPLE SMT validation"
+"witness annotations translation validation"
+"per-instance compiler correctness validation"
+"program refinement source transformation checking"
+
+KEY PAPERS (FULL REFERENCES)
+------------------------------
+1. Pnueli, Siegel, Singerman. "Translation Validation." TACAS 1998.
+   Springer LNCS 1384. DOI: 10.1007/BFb0054170
+
+2. Necula, G.C. "Translation Validation for an Optimizing Compiler."
+   PLDI 2000. ACM SIGPLAN Notices 35(5):83-94. DOI: 10.1145/349299.349314
+
+3. Lopes, N.P. et al. "Provably Correct Peephole Optimizations with Alive."
+   PLDI 2015. DOI: 10.1145/2813885.2737965
+
+4. Lopes, Lee, Hur, Liu, Regehr. "Alive2: Bounded Translation Validation for
+   LLVM." PLDI 2021. DOI: 10.1145/3453483.3454030
+
+5. Barthe, Demange, Pichardie. "Formal Verification of an SSA-Based Middle-End
+   for CompCert." ACM TOPLAS 36(1), 2014. DOI: 10.1145/2579080
+
+6. arXiv:2401.16797. "Enhancing Translation Validation with LLMs." Feb 2024.
+
+7. Zuck, Pnueli, Goldberg. "VOC: A Methodology for the Translation Validation
+   of Optimizing Compilers." J. UCS 9(3):223-247, 2003.
+
+8. Mullen, Zuniga, Tatlock, Grossman. "Verified Peephole Optimizations for
+   CompCert." PLDI 2016. DOI: 10.1145/2908080.2908109
+
+
+--------------------------------------------------------------------------------
+SECTION 2 — ABSTRACT INTERPRETATION FOR REFUSAL BOUNDARIES
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Abstract interpretation is a theory of sound approximation of program
+semantics introduced by Patrick and Radhia Cousot in their landmark POPL 1977
+paper. It provides a mathematically rigorous framework for static analysis:
+given a program, compute an over-approximation of its set of possible
+behaviors, without executing the program.
+
+"Over-approximation" is the key property: the abstract analysis is guaranteed
+to include all real program behaviors, plus possibly some spurious ones. This
+means: if the analysis says "this code cannot reach a null dereference", it
+really cannot. If the analysis says "this code might use reflection", it might
+or might not — but it definitely does not say it cannot when it can.
+
+For RefactorPilot, abstract interpretation serves the refusal system. Before
+attempting to validate or even transform a function, you run an abstract
+interpretation pass that classifies the function's behavior. If the function
+is classified as "uses dynamic dispatch with unresolvable targets", you refuse
+to transform it rather than generating a potentially incorrect transformation.
+
+THE COUSOT FRAMEWORK
+---------------------
+The theoretical core:
+
+  Concrete domain C: the set of all possible program states (e.g., all
+  possible mappings from variable names to values at a program point)
+
+  Abstract domain A: a simpler representation that approximates C
+  (e.g., intervals [min, max] instead of exact integer values)
+
+  Galois connection: a pair of functions alpha: C -> A (abstraction)
+  and gamma: A -> C (concretization) satisfying:
+    for all c in C, a in A: alpha(c) <= a iff c <= gamma(a)
+
+  Abstract transformer: for each program statement, an abstract version
+  that operates on abstract states. Must be sound: alpha(concrete_step(c))
+  <= abstract_step(alpha(c))
+
+  Fixpoint computation: for loops, compute the least fixpoint of abstract
+  transformers iteratively using widening operators to guarantee convergence.
+
+The power of this framework: it is compositional, modular, and provides
+formal soundness guarantees. You can build complex analyzers by composing
+simpler abstract domains, and the soundness guarantee propagates.
+
+WIDENING AND NARROWING: THE TERMINATION TRICK
+----------------------------------------------
+When abstract domains have infinite height (e.g., the interval domain [a,b]
+can grow without bound), fixpoint computation may not terminate. Widening
+operators force convergence by "jumping" above the current sequence to a
+larger element.
+
+Example: interval widening. If at two consecutive iterations we see
+variable x has values [0,5] and then [0,7], widening gives [0, +inf].
+This forces termination but loses precision.
+
+Narrowing operators recover some of the lost precision after convergence,
+by iterating downward from the over-approximated fixpoint.
+
+For RefactorPilot: you need simple abstract domains, not necessarily the most
+precise ones. A flag-based domain (e.g., "does this function use reflection: yes/no/maybe")
+is sufficient for classification purposes and terminates trivially.
+
+ABSTRACT DOMAINS RELEVANT TO REFACTORPILOT
+-------------------------------------------
+The following abstract domains are directly applicable:
+
+  1. REACHABILITY DOMAIN: Tracks which program points can be reached.
+     Used to detect dead code and unreachable branches. Useful for
+     identifying when a transformation is clearly safe (only affects
+     unreachable code) or clearly unsafe (affects all branches).
+
+  2. TYPE DOMAIN: Abstract interpretation of Python's type system.
+     This is essentially what mypy and pyright implement. For each
+     variable, track an abstract type (e.g., "int | str | None").
+     This is the basis for deciding whether a rename or extraction
+     is type-safe.
+
+  3. REFLECTION DETECTION DOMAIN: A simple domain with three values:
+     {clean, maybe_reflective, definitely_reflective}. Clean means
+     no calls to getattr(), eval(), exec(), __import__(), type(),
+     vars(), or dir() with dynamic arguments. The lattice is:
+     clean < maybe_reflective < definitely_reflective.
+
+  4. SIDE EFFECT DOMAIN: Tracks whether a function has side effects
+     beyond its return value. Does it mutate module-level state?
+     Does it write to files? Does it launch threads? This domain
+     determines whether transformations that change evaluation order
+     are safe.
+
+  5. CLOSURE CAPTURE DOMAIN: Tracks which outer-scope variables are
+     captured by closures defined inside a function. Essential for
+     deciding whether extracting inner code to a new function is safe.
+
+  6. ALIASING DOMAIN: Tracks which variables might be aliases for the
+     same underlying object. Critical for Python where a = b; a.x = 1
+     mutates through both names.
+
+ASTRÉE: INDUSTRIAL-GRADE ABSTRACT INTERPRETATION
+--------------------------------------------------
+ASTRÉE is a commercial static analyzer built at ENS Paris that applies
+abstract interpretation to C programs for safety-critical systems. It was
+developed specifically to analyze flight control software with zero false
+alarms.
+
+ASTRÉE's architecture is instructive:
+  - It combines dozens of abstract domains simultaneously
+  - Domain hierarchy: each domain handles different aspects of behavior
+  - Combination is done by reduced product (intersecting information
+    from multiple domains)
+  - Trace partitioning: splits analysis at conditional branches to
+    improve precision without exponential blowup
+  - Incremental analysis: only re-analyzes changed parts of code
+
+The key insight from ASTRÉE: build a hierarchy of increasingly expensive
+analyses. Start with a cheap domain, if it classifies the code as safe you're
+done. If not, escalate to a more expensive domain. Apply the most expensive
+analysis only when cheaper ones are inconclusive.
+
+For RefactorPilot's pre-flight classifier:
+  Level 1 (cheap): check for literal dangerous patterns via AST walking
+                   (eval, exec, getattr with non-literal string)
+  Level 2 (medium): type-flow analysis using pyright API
+  Level 3 (expensive): run CrossHair symbolic execution for bounded check
+
+SEA: STRING EXECUTABILITY ANALYSIS FOR REFLECTION
+--------------------------------------------------
+Paper: "SEA: String Executability Analysis by Abstract Interpretation"
+Arceri, Mastroeni et al., arXiv:1702.02406 (2017)
+
+This paper specifically addresses the problem of analyzing dynamic code
+generation — calls to eval(), exec(), and similar constructs. The key idea:
+represent string values abstractly as finite-state automata over character
+sequences.
+
+With a string abstract domain based on FSA:
+  - Regular string operations (concatenation, slicing, upper()) have exact
+    FSA transformers
+  - The analysis computes what strings could possibly flow into an eval() call
+  - From that, it synthesizes an over-approximating set of programs that
+    eval() could execute
+  - The abstract interpreter recurses on this synthesized code
+
+For RefactorPilot: the key application is classifying Python code that uses
+eval() or exec() with dynamic strings. If the string domain analysis shows
+that the argument to eval() is always from a fixed set (e.g., a string
+constant like "print(x)"), the code can be handled. If the string domain
+is unbounded, the code must be refused.
+
+CLOUSOT: .NET STATIC ANALYZER
+-------------------------------
+Clousot (Fähndrich, Logozzo — VMCAI 2010) is Microsoft's abstract
+interpretation-based analyzer for .NET code, using code contracts.
+
+Key lessons from Clousot:
+  - Modular analysis: analyzes each method in isolation, assuming the
+    precondition and checking the postcondition
+  - Incremental computation: hints from one run seed the next
+  - Adaptive domains: user specifies a sequence of (domain, hints) pairs,
+    getting faster but less precise analysis by starting with cheaper domains
+  - The "abstract hints" mechanism allows users to guide the analysis when
+    it gets stuck
+
+The Clousot approach is highly applicable to RefactorPilot: analyze each
+Python function in isolation, computing its abstract "signature" (what it
+could affect, what it requires) as an abstract state. Use this to decide
+safety of cross-function transformations.
+
+PRACTICAL CLASSIFICATION FRAMEWORK
+------------------------------------
+Based on the research, here is the concrete classification for RefactorPilot:
+
+ZONE 1: SAFELY TRANSFORMABLE
+  - Function is pure (no side effects, no mutation of non-local state)
+  - All arguments are typed (annotations present or inferred by pyright)
+  - No dynamic attribute access (no getattr with variable arguments)
+  - No metaclass usage
+  - No __getattr__ or __setattr__ overrides in the class
+  - No eval/exec/compile calls
+  - All called functions are also in Zone 1 (transitively)
+  Action: Transform, validate formally with SMT
+
+ZONE 2: CONSERVATIVELY TRANSFORMABLE
+  - Method calls on polymorphic receivers (interface dispatch)
+  - Closures capturing mutable outer-scope variables
+  - Conditional imports (import inside if blocks)
+  - Functions with side effects that are idempotent
+  - Classes with __slots__ (predictable layout but unusual)
+  Action: Transform with higher validation threshold, require differential
+  test coverage, confidence score < 0.8 flagged for human review
+
+ZONE 3: MUST REFUSE
+  - Any call to eval(), exec(), compile()
+  - getattr(obj, dynamic_string_variable)
+  - __import__(dynamic_string)
+  - Metaclass definitions that override type.__new__ or __prepare__
+  - Frame inspection (inspect.currentframe(), sys._getframe())
+  - Dynamic class creation via type() with computed arguments
+  - Monkey-patching of stdlib (e.g., builtins.print = ...)
+  Action: Refuse, generate structured explanation of why
+
+ZONE 4: REFUSE FOR GO SPECIFICALLY
+  - Import of the "unsafe" package
+  - Use of reflect.Value.Set() or reflect.Value.Pointer()
+  - Calls to cgo
+  - Goroutine-shared state without sync.Mutex or sync/atomic
+  Action: Refuse, explain that transformation requires concurrency analysis
+
+EXACT SEARCH TERMS FOR SECTION 2
+----------------------------------
+"abstract interpretation over-approximation program analysis"
+"Cousot Cousot abstract interpretation POPL 1977"
+"ASTRÉE static analyzer abstract interpretation flight control"
+"Clousot .NET code contracts abstract interpretation"
+"SEA string executability analysis reflection eval"
+"points-to analysis Python dynamic dispatch"
+"abstract domain reflection detection"
+"widening narrowing abstract interpretation fixpoint"
+"CEGAR counterexample abstraction refinement"
+"sound static analysis unsafe code classification"
+
+KEY PAPERS (FULL REFERENCES)
+------------------------------
+1. Cousot, P. & Cousot, R. "Abstract Interpretation: A Unified Lattice Model
+   for Static Analysis." POPL 1977. DOI: 10.1145/512950.512973
+
+2. Cousot, P. & Cousot, R. "Systematic Design of Program Analysis Frameworks."
+   POPL 1979. DOI: 10.1145/567752.567778
+
+3. Bertrane et al. "Static Analysis by Abstract Interpretation of Embedded
+   Systems." ERTS 2010. hal.inria.fr/inria-00528632
+
+4. Arceri, Mastroeni et al. "SEA: String Executability Analysis by Abstract
+   Interpretation." arXiv:1702.02406, 2017.
+
+5. Fähndrich & Logozzo. "Static Contract Checking with Abstract Interpretation."
+   FoVeOOS 2010. DOI: 10.1007/978-3-642-18070-5_2
+
+6. Reps & Thakur. "Automating Abstract Interpretation." VMCAI 2016.
+   DOI: 10.1007/978-3-662-49122-5_1
+
+7. Blanchet et al. "A Static Analyzer for Large Safety-Critical Software."
+   PLDI 2003. DOI: 10.1145/781131.781153
+
+
+--------------------------------------------------------------------------------
+SECTION 3 — RELATIONAL VERIFICATION AND EQUIVALENCE CHECKING
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Relational verification is verification about pairs of programs, or about
+two different executions of the same program. Standard (non-relational)
+verification answers the question: "does this program satisfy property P?"
+Relational verification answers: "are these two programs related by relation R?"
+
+For RefactorPilot, the fundamental question is always relational: "does the
+refactored program R behave the same as the original program O for all inputs?"
+This is the behavioral equivalence (or refinement) relation, and relational
+verification is the formal framework for proving it.
+
+THE PRODUCT PROGRAM CONSTRUCTION
+---------------------------------
+The key technical contribution of Barthe, Crespo, Kunz (FM 2011) is the
+product program construction. Given two programs P1 and P2 and a relational
+specification (pre-relation phi, post-relation psi), the product program
+P1 x P2 is a single program that:
+  1. Simulates execution of P1 and P2 in lockstep
+  2. Asserts the pre-relation phi on the combined initial state
+  3. Checks the post-relation psi on the combined final state
+
+The remarkable result: if you can verify the product program using any
+standard single-program verifier, then the relational property (phi)
+holds. This reduces relational verification to standard verification,
+making all existing verification tools applicable.
+
+Example: to check that refactored function F2 is equivalent to original F1:
+  - Create product program: first execute F1 on input (x1, y1), storing
+    result in r1. Then execute F2 on input (x2, y2), storing result in r2.
+  - Pre-relation phi: x1 = x2 AND y1 = y2 (same inputs)
+  - Post-relation psi: r1 = r2 (same outputs)
+  - Assert phi before and psi after in the product program
+  - Run any standard verifier. If it proves no assertion failure, F1 and
+    F2 are equivalent.
+
+The subtlety for non-trivial programs: the naive "sequential" product (run P1
+then P2) is often hard to verify because the invariants needed don't hold in
+the sequential execution. The art is in choosing the right synchronization
+point between P1 and P2 to make the product amenable to automated verification.
+
+SEMANTIC PROGRAM ALIGNMENT (PLDI 2019)
+----------------------------------------
+Churchill, Padon, Sharma, Aiken — "Semantic Program Alignment for Equivalence
+Checking." PLDI 2019. This is the state-of-the-art practical technique for
+handling non-trivial program pairs.
+
+The key insight: instead of constructing the product program syntactically
+(using structural rules about programs), construct it semantically using
+concrete execution traces. The algorithm:
+
+  1. Collect concrete execution traces for both F1 and F2 on sampled inputs.
+  2. Align the traces: find a mapping between loop iterations and branch
+     decisions in F1 and F2 that maximizes structural similarity.
+  3. Use this alignment to construct a product program where corresponding
+     execution points are synchronized.
+  4. Encode the synchronized product program into SMT.
+  5. Ask the solver: is there any input on which the aligned executions
+     diverge?
+
+This technique verified the hand-optimized glibc strlen implementation
+(600+ lines of x86 assembly vs. a simple C reference) and 55 out of 56
+vectorization benchmarks from the Test Suite for Vectorizing Compilers.
+The one failure was a timeout, not a false alarm.
+
+The product program alignment algorithm uses a PAA (Program Alignment
+Automaton) that jointly simulates both programs, with states recording
+which loop iteration of which program is currently executing. SMT constraints
+encode the alignment conditions.
+
+REGRESSION VERIFICATION
+------------------------
+Godlin & Strichman, "Regression Verification" (DAC 2009) introduced the term
+for the specific application of relational verification to software evolution:
+checking that a new version of a program preserves the behavior of the old
+version.
+
+SymDiff (Lahiri, Hawblitzel, Kawaguchi, Rebelo — CAV 2012) is a practical
+tool implementing regression verification that is language-agnostic (works
+at the IR level). Key technique: differential assertion checking. For each
+function F, create the product program by calling old F and new F on the
+same inputs and asserting they produce the same outputs. Propagate any
+discrepancy back through the call graph.
+
+The Will You Still Compile Me Tomorrow? paper (Hawblitzel et al., FSE 2013)
+applied SymDiff to cross-version validation of an industrial C compiler,
+checking that a new version compiles each function identically to the previous
+version. This is precisely the use case for RefactorPilot.
+
+COEUS: RL-GUIDED RELATIONAL VERIFICATION
+-----------------------------------------
+Chen, Wei, Feng, Bastani, Dillig. "Relational Verification Using Reinforcement
+Learning." OOPSLA 2019, ACM SIGPLAN. Tool: Coeus.
+
+The problem: there are many possible product program constructions for a given
+pair of programs. Some constructions lead to tractable verification problems,
+others to intractable ones. The choice of construction is critical.
+
+Coeus formulates the product construction choice as a Markov Decision Process
+and uses reinforcement learning to learn an optimal policy. The state is the
+current partial product program, the actions are alignment choices, and the
+reward is successful verification.
+
+Key results: Coeus outperforms baseline relational verifiers on benchmark
+suites containing equivalence checking, non-interference verification, and
+compiler optimization checking.
+
+For RefactorPilot: this RL-based alignment selection is relevant for handling
+complex transformations like loop fusion/fission, where the structural
+correspondence between original and refactored is non-trivial.
+
+ABSTRACT SEMANTIC DIFFERENCING
+--------------------------------
+Partush & Yahav, "Abstract Semantic Differencing for Numerical Programs."
+SAS 2013.
+
+Instead of proving full equivalence, this technique computes an abstract
+semantic "diff" between two programs: what inputs cause them to differ, and
+by how much. This is useful for RefactorPilot in cases where you cannot
+prove full equivalence but want to understand the extent of the divergence.
+
+The approach: run abstract interpretation on the product program using
+numerical abstract domains (polyhedra, octagons). The abstract invariants
+characterize the relationship between the two programs' states.
+
+HYPER-PROPERTIES AND K-SAFETY
+-------------------------------
+Clarkson & Schneider, "Hyperproperties." CSF 2008.
+
+Properties that relate multiple executions of a program are called
+hyperproperties. Standard safety properties (trace properties) concern
+single executions. Equivalence is a 2-hyperproperty (relates pairs of
+executions). Non-interference (information flow security) is also a
+2-hyperproperty.
+
+k-safety properties are hyperproperties relating k executions that can be
+verified by constructing a k-fold self-composition (product) of the program.
+This theoretical framework generalizes the product program construction and
+connects it to the broader literature on secure information flow and
+differential privacy.
+
+BOUNDED RELATIONAL VERIFICATION WITH Z3 AND SMT
+-------------------------------------------------
+For practical implementation in RefactorPilot, the most deployable approach
+is bounded relational verification using Z3 directly.
+
+Algorithm:
+  1. Normalize both programs to a common IR (three-address code or SSA)
+  2. Inline function calls to a configurable depth
+  3. Unroll loops to a configurable bound
+  4. Construct the product program as an SMT formula
+  5. Assert the divergence condition: pre-condition holds AND outputs differ
+  6. Ask Z3: is this satisfiable? If yes: counterexample found.
+     If no: programs are equivalent for all inputs within the bounds.
+
+The bound determines soundness vs. completeness:
+  - If bound is 0 (no loops): always terminates, may miss bugs in loops
+  - If bound is 3: catches most real-world bugs, manageable SMT size
+  - If bound is 10: expensive but catches deep loop bugs
+
+For a source refactoring validator, bound of 3-5 is typically sufficient
+because most refactoring transformations do not change loop bounds.
+
+EXACT SEARCH TERMS FOR SECTION 3
+----------------------------------
+"product program relational verification Barthe Crespo Kunz"
+"semantic program alignment equivalence checking Churchill Aiken"
+"regression verification SymDiff differential assertion"
+"Coeus reinforcement learning relational verification"
+"abstract semantic differencing Partush Yahav"
+"hyperproperties k-safety Clarkson Schneider"
+"bounded relational verification SMT Z3"
+"equivalence checking source transformation before after"
+"relational program logics program pairs"
+"CoVaC compiler validation cross-product analysis"
+
+KEY PAPERS (FULL REFERENCES)
+------------------------------
+1. Barthe, Crespo, Kunz. "Relational Verification Using Product Programs."
+   FM 2011. DOI: 10.1007/978-3-642-21437-0_17
+
+2. Churchill, Padon, Sharma, Aiken. "Semantic Program Alignment for
+   Equivalence Checking." PLDI 2019. DOI: 10.1145/3314221.3314596
+
+3. Chen, Wei, Feng, Bastani, Dillig. "Relational Verification Using RL."
+   OOPSLA 2019. DOI: 10.1145/3360567
+
+4. Lahiri, Hawblitzel, Kawaguchi, Rebelo. "SymDiff: Language-Agnostic Semantic
+   Diff." CAV 2012. DOI: 10.1007/978-3-642-31424-7_54
+
+5. Godlin & Strichman. "Regression Verification." DAC 2009.
+   DOI: 10.1145/1629911.1630100
+
+6. Partush & Yahav. "Abstract Semantic Differencing for Numerical Programs."
+   SAS 2013. DOI: 10.1007/978-3-642-38856-9_14
+
+7. Clarkson & Schneider. "Hyperproperties." CSF 2008.
+   DOI: 10.1109/CSF.2008.7
+
+8. Zaks & Pnueli. "CoVaC: Compiler Validation by Program Analysis of the
+   Cross-Product." FM 2008. DOI: 10.1007/978-3-540-68237-0_5
+
+9. Hawblitzel et al. "Will You Still Compile Me Tomorrow? Static Cross-Version
+   Compiler Validation." FSE 2013. DOI: 10.1145/2491411.2491448
+
+
+--------------------------------------------------------------------------------
+SECTION 4 — COUNTEREXAMPLE-GUIDED SYNTHESIS AND REPAIR (CEGIS / SyGuS / SemGuS)
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Once a validator detects that a transformation is incorrect — it finds a
+counterexample input on which source and refactored programs diverge — the
+question becomes: can we automatically fix the incorrect transformation?
+This is the automatic repair problem.
+
+CEGIS (Counterexample-Guided Inductive Synthesis) is the dominant algorithmic
+framework for this task. It was introduced in Solar-Lezama et al. (2006) in
+the context of program sketching and has become the foundation for most
+program synthesis and repair work.
+
+THE CEGIS LOOP
+--------------
+A CEGIS solver alternates between two components:
+
+  VERIFIER: Takes a candidate program C and the original specification S.
+  Checks whether there exists any input x such that C(x) != S(x).
+  If yes: outputs a counterexample x*.
+  If no: outputs "sound" (C satisfies S for all inputs).
+
+  SYNTHESIZER: Takes the accumulated set of counterexamples {x1, x2, ..., xk}.
+  Finds a candidate program C' from the search space such that C'(xi) = S(xi)
+  for all accumulated counterexamples.
+  This is an existential (forall-free) problem and is tractable with SMT.
+
+The interaction:
+  1. Start with empty counterexample set.
+  2. Synthesizer produces candidate C.
+  3. Verifier checks C. If sound: done. If not: adds counterexample.
+  4. Synthesizer produces new candidate C' consistent with all counterexamples.
+  5. Repeat until verifier confirms soundness or search space is exhausted.
+
+Why CEGIS terminates: each counterexample eliminates at least one candidate
+from the search space. If the search space is finite, CEGIS always terminates.
+For infinite search spaces: CEGIS may not terminate but typically converges
+quickly in practice because counterexamples eliminate large subsets.
+
+PROGRAM SKETCHING (SOLAR-LEZAMA ET AL.)
+-----------------------------------------
+Solar-Lezama's PhD thesis and the PLDI 2006 paper introduced program sketching
+as the application domain for CEGIS. A sketch is a partial program with "holes"
+— unknown fragments that the synthesizer must fill. The programmer provides:
+  - The program structure (control flow, data flow)
+  - The specification (what the completed program should do)
+  - The search space (bounds on hole values)
+
+CEGIS fills the holes by searching for values consistent with the specification
+on all counterexamples seen so far. This was demonstrated on high-performance
+bit-manipulation implementations where the programmer knew the structure but
+not the exact bit operations.
+
+For RefactorPilot: the "sketch" is the refactored program with holes for
+specific expressions that might be wrong. The holes are discovered by the
+validator (which can identify exactly which sub-expressions diverge).
+
+SyGuS: SYNTAX-GUIDED SYNTHESIS
+--------------------------------
+Alur, Bodik et al. "Syntax-Guided Synthesis." FMCAD 2013.
+
+SyGuS generalizes CEGIS by making the grammar of the search space an explicit
+first-class input to the synthesis problem. A SyGuS problem is:
+  - A logical specification phi (what the synthesized function must satisfy)
+  - A grammar G (the syntactic space of allowed implementations)
+  Find: an implementation e in G such that phi[f/e] is valid.
+
+SyGuS is solver-agnostic: any synthesis algorithm that can work with
+grammar-restricted search spaces can solve SyGuS problems. The SyGuS
+competition has driven a decade of progress in practical synthesizers.
+
+For RefactorPilot's repair module:
+  - The grammar G should be a small DSL of atomic repair operations:
+      * Replace expression at location L with expression E
+      * Add a None check before expression at location L
+      * Replace method call m() with m2() at location L
+      * Add type cast at location L
+  - The specification phi is: the repaired program equals the original
+    program on all counterexample inputs
+  - The synthesizer searches G for a sequence of operations satisfying phi
+
+The SyGuS competition benchmarks and CVC4's SyGuS mode are publicly
+available and directly usable for implementing this.
+
+SemGuS: SEMANTICS-GUIDED SYNTHESIS
+------------------------------------
+Kim, Hu, D'Antoni, Reps. "Semantics-Guided Synthesis." POPL 2021.
+Website: semgus.org
+
+SemGuS extends SyGuS by allowing the user to provide not just the syntax
+(grammar) but also the semantics (operational rules) for the language. This
+makes the framework applicable to arbitrary programming languages, including
+novel DSLs, non-standard semantics, and abstract semantics.
+
+The key innovation: in SyGuS, the semantics of the grammar productions is
+fixed to the background theory. In SemGuS, the semantics is provided by the
+user as Constrained Horn Clauses (CHCs) defining a big-step evaluation
+relation. This allows:
+  - Synthesis over imperative programs with loops (unbounded semantics)
+  - Synthesis using abstract semantics (e.g., interval semantics) for
+    efficient pruning
+  - Synthesis for non-standard interpretations (e.g., symbolic execution
+    semantics)
+
+For RefactorPilot, SemGuS is particularly powerful because:
+  1. You can define the semantics of your repair DSL directly as CHCs
+  2. You can use an abstract semantics for efficient candidate pruning
+  3. The framework handles the Python/Go source language natively
+
+The Moito tool implements SemGuS with automatic interval-based pruning
+(D'Antoni et al.) — if the semantics is monotone, abstract pruning can
+be automated without domain expertise.
+
+S3: SYNTAX AND SEMANTIC GUIDED REPAIR
+---------------------------------------
+Le, Chu et al. "S3: Syntax- and Semantic-Guided Repair Synthesis."
+ESEC/FSE 2017.
+
+S3 presents a practical repair synthesis system with three key components:
+  1. A DSL (SYNTH-LIB) that describes the space of possible repairs
+  2. An enumeration-based search over the DSL
+  3. Ranking functions based on syntactic and semantic proximity to the
+     original expression
+
+The ranking functions are particularly important: among all candidate repairs
+that satisfy the specification, prefer the one most similar to the original.
+This produces human-readable, minimal repairs.
+
+Key result: S3 generates correct patches for 22 of 52 bugs in a benchmark,
+compared to 7 for Angelix, 1 for Enumerative, and 1 for CVC4.
+
+The semantic distance metric in S3: use model counting (counting the number
+of inputs on which two boolean expressions disagree) as a measure of semantic
+distance. This helps prefer repairs that are semantically closest to the
+original expression.
+
+For RefactorPilot: adopt S3's ranking approach. When the CEGIS loop produces
+multiple valid repairs, rank by (1) syntactic similarity to original, (2)
+semantic distance using counterexample coverage.
+
+CEGIS(T): CEGIS MODULO THEORIES
+---------------------------------
+David, Kroening et al. "CEGIS(T): Counterexample-Guided Inductive Synthesis
+Modulo Theories." CAV 2018.
+
+Standard CEGIS uses a SAT solver as the synthesis backend, which means it
+can only generate constants expressible in a boolean/bitvector theory. Many
+repairs require non-trivial numeric constants (e.g., replacing 100 with 101
+in a boundary condition). CEGIS(T) extends CEGIS by using a theory solver
+in the synthesis step.
+
+The T in CEGIS(T) is a first-order theory (e.g., linear arithmetic over
+integers). The synthesis step combines:
+  - SAT solving for the structural choices (which operations to use)
+  - Theory solver (e.g., Fourier-Motzkin variable elimination) for
+    computing the required constants
+
+This enables synthesizing programs with specific numeric conditions that
+would be practically impossible to enumerate.
+
+For RefactorPilot: use CEGIS(T) when the repair involves finding the right
+numeric boundary condition (e.g., off-by-one errors in index computations).
+
+BOUNDED REPAIR OVER A REFACTORING DSL
+---------------------------------------
+The practical design for RefactorPilot's repair system:
+
+  DSL operations (parameterized by location L in the AST):
+    REPLACE(L, expr): replace the expression at location L with expr
+    ADD_CHECK(L, condition): add a guard condition before statement at L
+    ADD_CAST(L, type): add explicit type cast at location L
+    SWAP_ARGS(L, i, j): swap arguments i and j of function call at L
+    RENAME_LOCAL(L, new_name): rename local variable at location L
+    REMOVE_BRANCH(L): remove else branch at location L
+    INLINE_CALL(L): inline function call at location L
+
+  Search strategy:
+    1. Start with single-operation repairs (depth 1)
+    2. Expand to two-operation repairs if depth 1 fails
+    3. Cap at depth 3 (in practice almost all bugs need depth <= 2)
+
+  Specification:
+    For each counterexample (x1, x2, ..., xn) found by the validator,
+    repaired_program(xi) must equal original_program(xi).
+
+  Implementation:
+    Use Z3's Python API directly. Encode each candidate repair as an
+    SMT formula parameterized by the DSL's free variables. Add the
+    counterexample constraints as hard clauses. Query Z3 for satisfying
+    assignment.
+
+EXACT SEARCH TERMS FOR SECTION 4
+----------------------------------
+"CEGIS counterexample guided inductive synthesis program repair"
+"SyGuS syntax guided synthesis repair benchmark"
+"SemGuS semantics guided synthesis constrained horn clauses"
+"S3 syntax semantic guided repair synthesis FSE 2017"
+"program sketching Solar-Lezama"
+"CEGIS modulo theories David Kroening CAV 2018"
+"bounded program repair DSL search space"
+"automatic bug fixing synthesis SMT"
+"Angelix program repair symbolic execution"
+"GenProg genetic programming automatic repair"
+
+KEY PAPERS (FULL REFERENCES)
+------------------------------
+1. Alur et al. "Syntax-Guided Synthesis." FMCAD 2013.
+   IEEE. ieeexplore.ieee.org/document/6679385
+
+2. Kim, Hu, D'Antoni, Reps. "Semantics-Guided Synthesis." POPL 2021.
+   DOI: 10.1145/3434311
+
+3. Le, Chu et al. "S3: Syntax- and Semantic-Guided Repair Synthesis."
+   ESEC/FSE 2017. DOI: 10.1145/3106237.3106309
+
+4. David, Kroening et al. "CEGIS(T): Counterexample-Guided Synthesis Modulo
+   Theories." CAV 2018. DOI: 10.1007/978-3-319-96145-3_15
+
+5. Solar-Lezama et al. "Combinatorial Sketching for Finite Programs."
+   ASPLOS 2006. DOI: 10.1145/1168857.1168907
+
+6. Jha & Seshia. "A Theory of Formal Synthesis via Inductive Learning."
+   TCS 2017. DOI: 10.1016/j.tcs.2016.07.035
+
+7. Murphy, Johnson, Reps, D'Antoni. "Verifying Solutions to SemGuS Problems."
+   POPL 2024. DOI: 10.1145/3729320
+
+
+--------------------------------------------------------------------------------
+SECTION 5 — E-GRAPHS AND EQUALITY SATURATION
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+An e-graph (equality graph) is a data structure that efficiently represents
+a large set of equivalent expressions simultaneously. Where a normal expression
+tree represents exactly one expression, an e-graph represents an exponential
+(or even infinite) number of equivalent expressions compactly.
+
+E-graphs were originally invented in the 1970s for use in automated theorem
+provers (Nelson & Oppen, 1980). The modern revival of interest in e-graphs
+for compiler optimization comes from the equality saturation technique
+(Tate, Stepp, Tatlock, Lerner — POPL 2009).
+
+EQUALITY SATURATION
+--------------------
+The classical approach to rewrite-based program optimization is destructive
+rewriting: pick a rewrite rule, apply it, move on. This leads to the
+phase-ordering problem: the order in which you apply rewrites affects the
+final result, and the globally optimal sequence is NP-hard to find.
+
+Equality saturation avoids the phase-ordering problem by never discarding
+information. The algorithm:
+
+  1. Create an e-graph with one e-node per original subexpression.
+  2. For each rewrite rule l -> r in the rule set:
+       For each match of l in the e-graph:
+         Add r to the same equivalence class as l.
+  3. Repeat until no new equivalences can be added (saturation) or timeout.
+  4. Extract the optimal expression from the e-graph using a cost function.
+
+At saturation, the e-graph represents ALL expressions reachable from the
+original by any sequence of rewrites. Extraction then finds the best one.
+
+Key properties:
+  - No phase-ordering problem: all rewrites are applied "simultaneously"
+  - No information loss: existing expressions are never deleted
+  - Compact representation: exponentially many expressions stored in
+    polynomial space (on average)
+  - Optimal extraction: given a cost function, find the global optimum
+
+THE EGG LIBRARY (POPL 2021 DISTINGUISHED PAPER)
+-------------------------------------------------
+Willsey, Nandi, Wang, Flatt, Tatlock, Panchekha.
+"egg: Fast and Extensible Equality Saturation." POPL 2021.
+Code: github.com/egraphs-good/egg
+
+egg is the definitive implementation of equality saturation for practical
+use. Written in Rust, it provides a library API for building rewrite-based
+optimizers, synthesizers, and verifiers.
+
+Two key innovations in egg:
+
+  1. REBUILDING: Instead of maintaining e-graph invariants after every
+     single rewrite application (the traditional approach), egg defers
+     invariant maintenance ("rebuilding") to batch phases. This provides
+     asymptotic speedups: applying n rewrites in a batch is O(n log n) with
+     rebuilding, vs O(n^2) with immediate invariant maintenance.
+
+  2. E-CLASS ANALYSES: A generic extension mechanism for integrating
+     domain-specific analyses into the e-graph. Each e-class can carry
+     metadata (analysis data) that is computed and maintained automatically
+     as the e-graph evolves. Examples:
+       - Constant folding: compute the concrete value of expressions that
+         are constant
+       - Free variable tracking: track which variables appear in an expression
+       - Type inference: track the inferred type of each expression
+       - Side-effect tracking: track whether an expression has side effects
+
+     E-class analyses compose automatically and integrate with rewrite rules
+     (conditional rewrites can check analysis data before firing).
+
+Performance: egg performs the same equivalence verification task as Z3 in
+1.56 seconds vs. Z3's 24.65 seconds (15x faster). With batched evaluation:
+0.52 seconds (47x faster).
+
+APPLICATIONS OF egg
+---------------------
+The egg paper demonstrated applications in four domains:
+
+  1. TENSAT (deep learning graph optimization): uses egg to optimize DL
+     computation graphs. Achieves up to 50x speedup over previous state of
+     the art by efficiently exploring a large space of equivalent graph
+     substitutions.
+
+  2. HERBIE (floating-point accuracy improvement): uses egg to search for
+     mathematically equivalent but numerically more accurate formulations.
+     The egg-based herbie is 3000x faster than the previous implementation.
+
+  3. SZALINSKI (3D CAD program shrinking): uses egg to reverse-engineer
+     high-level CAD programs from low-level geometric descriptions.
+
+  4. SPORES (linear algebra optimization): uses egg for expression
+     rewriting over linear algebra. Achieves 5x better optimization than
+     state of the art.
+
+The common theme: all these applications benefit from exploring a large
+space of equivalent expressions efficiently, without committing early to
+specific rewrite sequences.
+
+EGGLOG: THE SUCCESSOR SYSTEM
+------------------------------
+egglog (github.com/egraphs-good/egglog) is the successor to egg, combining
+equality saturation with Datalog-style reasoning. Key advantages:
+  - Incremental execution: only recomputes what changed
+  - Composable analyses: analyses are just Datalog rules
+  - Language-based design: whole analysis specified as a program
+  - Better scalability for complex rule sets
+
+egglog is more recent (2022-2023) and still maturing, but for complex
+analysis rules it will outperform egg.
+
+USING E-GRAPHS FOR EQUIVALENCE VERIFICATION
+---------------------------------------------
+Beyond optimization, e-graphs can be used for verification:
+
+Add both the original expression E1 and the candidate expression E2 to a
+fresh e-graph. Apply all known rewrite rules until saturation. Check: are
+E1 and E2 in the same e-class?
+
+If yes: they are provably equivalent under the given axioms.
+If no: they might still be equivalent under more axioms, or they might differ.
+
+This technique is used in TASO (Jia et al., SOSP 2019) to verify synthesized
+tensor computation graph substitutions: the generated substitutions are
+checked for correctness against a trusted set of universally quantified axioms
+by equality saturation. The TASO verification was 15x faster with egg than
+with Z3.
+
+For RefactorPilot: use e-graph equivalence checking as a lightweight first
+pass before invoking the full SMT-based validator. If the e-graph confirms
+equivalence, skip the SMT check. If not, fall through to SMT.
+
+APPLYING EQUALITY SATURATION TO SOURCE TRANSFORMATIONS
+-------------------------------------------------------
+For Python/Go source transformation:
+
+  1. DEFINE A LANGUAGE: Map your language's expression grammar to egg's
+     Language trait. Each node type (BinOp, Call, Attribute, etc.) becomes
+     an e-node. This is your source language AST as a recursive datatype.
+
+  2. DEFINE REWRITE RULES: Encode known semantic equivalences:
+       x + 0 => x
+       x * 1 => x
+       len(list(x)) => len(x) if x is already a list
+       list(x)[0] => next(iter(x)) for any iterable
+       not (a or b) => not a and not b (De Morgan)
+       dict(items) where items is constant => computed dict constant
+
+  3. ADD E-CLASS ANALYSES for:
+       - Type information (from pyright/go/types)
+       - Side-effect flag (does this expression have side effects?)
+       - Is-constant flag (is this a compile-time constant?)
+
+  4. CONDITIONAL REWRITES using e-class analyses:
+       x + 0 => x ONLY IF x.type is numeric (not if x could be a string)
+
+  5. EXTRACTION with a cost function:
+       Cost = AST depth + number of function calls + penalty for uncommon idioms
+       Lower cost = more idiomatic, simpler code
+
+THE PHASE-ORDERING PROBLEM FOR REFACTORING
+--------------------------------------------
+This problem is very real in source transformation. Example:
+  - Transformation A: extract method X into a helper function
+  - Transformation B: inline function Y
+  - If you apply A before B, the extraction creates dead code
+  - If you apply B before A, the extraction target changes
+
+E-graph canonicalization before applying transformations ensures that the
+input to the transformation engine is in a canonical form, eliminating
+many ordering dependencies.
+
+PROGRAM EXPRESSION GRAPHS (PEGs)
+---------------------------------
+Tate, Stepp, Tatlock, Lerner (POPL 2009) used specialized e-graphs called
+Program Expression Graphs that can represent loops and conditionals as
+e-nodes. This enables equality saturation for full programs, not just
+loop-free expressions.
+
+PEGs use "theta" nodes to represent loop-carried values and "eval/pass"
+nodes for conditionals. This is more complex than pure expression e-graphs
+but is necessary for handling programs with control flow.
+
+For RefactorPilot: start with expression-level e-graphs for within-function
+expression normalization. Add PEG-style loop nodes if you need to handle
+loop transformations.
+
+EXACT SEARCH TERMS FOR SECTION 5
+----------------------------------
+"egg fast extensible equality saturation POPL 2021"
+"egglog datalog equality saturation incremental"
+"equality saturation phase ordering problem"
+"e-graph equivalence verification TASO"
+"program expression graphs PEG equality saturation"
+"rewrite rules source transformation canonicalization"
+"e-class analysis domain-specific egg"
+"equality saturation extraction cost function"
+"Tensat deep learning equality saturation"
+"Herbie floating point accuracy e-graphs"
+
+KEY PAPERS (FULL REFERENCES)
+------------------------------
+1. Willsey, Nandi, Wang, Flatt, Tatlock, Panchekha. "egg: Fast and Extensible
+   Equality Saturation." POPL 2021. DOI: 10.1145/3434304
+
+2. Tate, Stepp, Tatlock, Lerner. "Equality Saturation: A New Approach to
+   Optimization." POPL 2009. DOI: 10.1145/1480881.1480915
+
+3. Jia, Padon, Thomas et al. "TASO: Optimizing Deep Learning Computation with
+   Automatic Generation of Graph Substitutions." SOSP 2019.
+   DOI: 10.1145/3341301.3359579
+
+4. Panchekha, Sanchez-Stern, Wilcox, Tatlock. "Automatically Improving
+   Accuracy for Floating Point Expressions." PLDI 2015.
+   DOI: 10.1145/2737924.2737959 (Herbie)
+
+5. Nandi, Willsey, et al. "Synthesizing Structured CAD Models with Equality
+   Saturation and Inverse Transformations." PLDI 2020. (Szalinski)
+   DOI: 10.1145/3385412.3386012
+
+6. Newcomb, Adams, Johnson, Bodik, Kamil. "Verifying and Improving Halide's
+   Term Rewriting System with Program Synthesis." OOPSLA 2020.
+   DOI: 10.1145/3428234
+
+
+--------------------------------------------------------------------------------
+SECTION 6 — PYTHON SEMANTIC TOOLING BEYOND SYNTAX
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Python's dynamic nature makes it the harder language for semantic
+transformation validation. Key challenges:
+  - Duck typing: any object can implement any protocol
+  - Late binding: method lookup happens at runtime
+  - Eval and exec: arbitrary code execution from strings
+  - Metaclasses: classes that modify class creation
+  - Descriptors: __get__/__set__ intercept attribute access
+  - Multiple inheritance with MRO: method resolution can be complex
+
+The good news: the Python typing ecosystem has matured dramatically since
+PEP 484 (2015). mypy, pyright, pytype, and the new Astral ty (2024) provide
+increasingly powerful type inference that can be used as semantic oracles.
+
+MYPY: THE REFERENCE IMPLEMENTATION
+-------------------------------------
+Mypy (Jukka Lehtosalo, Guido van Rossum, et al.) is the original Python
+type checker, developed at Dropbox and later at Python.org. It is the
+reference implementation of PEP 484 type annotations.
+
+Architecture:
+  - Phase 1: Parse Python source to AST
+  - Phase 2: Semantic analysis (build symbol tables, resolve names)
+  - Phase 3: Type checking (infer and check types)
+  - Result: typed AST with type information at every node
+
+Key properties relevant to RefactorPilot:
+  - INCREMENTAL: analyzes one module at a time, respects import boundaries
+  - GRADUAL TYPING: unannotated functions default to Any; mixed codebases
+    get partial checking rather than failures
+  - NO RETURN TYPE INFERENCE: by design, functions without return type
+    annotations are assumed to return Any. This is a deliberate choice
+    to avoid expensive whole-program analysis.
+  - PLUGIN API: mypy has a rich plugin API for custom type inference rules.
+    Companies like SQLAlchemy and attrs use mypy plugins to add type
+    inference for their DSLs.
+
+Mypy internals of interest:
+  - types.py: the type system representation (Instance, Union, TypeVarType, etc.)
+  - checker.py: the core type checking logic
+  - checkexpr.py: expression-level type checking
+  - dmypy: the mypy daemon for incremental checking
+
+For RefactorPilot: use mypy's daemon API (dmypy) for fast incremental type
+information queries. This avoids re-checking the entire codebase on every
+transformation.
+
+PYRIGHT: THE PRODUCTION-GRADE ALTERNATIVE
+------------------------------------------
+Pyright (Microsoft, powers VS Code's Pylance extension) is the most advanced
+Python type checker currently available. Key advantages over mypy:
+
+  1. AGGRESSIVE TYPE INFERENCE: pyright infers return types, parameter types,
+     and instance variable types even without annotations. This is crucial
+     for RefactorPilot because many production Python codebases are partially
+     or un-annotated.
+
+  2. FLOW-SENSITIVE TYPE NARROWING: pyright tracks type narrowing through
+     conditionals precisely. After "if x is not None:", x is narrowed to
+     its non-None type in all subsequent references.
+
+  3. FIVE STRICTNESS LEVELS: off, basic, standard, strict, all. Standard
+     is the default. Strict mode is close to fully type-checked.
+
+  4. PROGRAMMATIC API: pyright can be used as a library, not just a CLI
+     tool. You can query it for the type of any expression in a file.
+
+  5. SPEED: pyright is significantly faster than mypy on large codebases
+     due to its incremental, demand-driven analysis.
+
+For RefactorPilot: use pyright's language server protocol (LSP) server mode
+for integration. Query types at specific locations in source files using
+LSP textDocument/hover or a pyright-specific API.
+
+Python API access pattern:
+  - Use the pyright Python package (pip install pyright) as a subprocess
+  - Parse the JSON output for type information at specific positions
+  - Or: use the LSP client library pyright-langserver directly
+
+LIBCST: CONCRETE SYNTAX TREE TRANSFORMATIONS
+----------------------------------------------
+LibCST (Facebook/Meta, github.com/Instagram/LibCST) is Python's most
+complete Concrete Syntax Tree library. Unlike the standard ast module,
+LibCST preserves all whitespace, comments, and formatting — it is
+round-trip safe: parse -> transform -> unparse produces valid Python.
+
+Key capabilities:
+  - CODEMODS: transformation passes written as CST visitors
+  - WRAPPER API: codemod wrappers that provide context (module path, etc.)
+  - METADATA PROVIDERS: pluggable providers for type information,
+    qualified names, scope analysis, and more
+  - NATIVE TYPE INFERENCE: the TypeInferenceProvider interface connects
+    LibCST to a type inference backend (mypy, pyright, or a custom one)
+
+The TypeInferenceProvider protocol:
+  LibCST uses mypy or pyright as backends via the InferredTypeMetadata.
+  You call wrapper.resolve(TypeInferenceProvider) and then access type
+  information at any CST node: wrapper.get_metadata(TypeInferenceProvider, node)
+
+  The libcst-mypy package (github.com/Kludex/libcst-mypy) provides
+  a mypy-backed type inference provider.
+
+The QualifiedNameProvider:
+  Resolves every name reference to its fully qualified name. Essential for
+  understanding that `pd.DataFrame` refers to `pandas.core.frame.DataFrame`
+  regardless of how pandas was imported.
+
+The ScopeProvider:
+  Provides full scope analysis. For each variable reference, tells you
+  exactly which definition it resolves to. Essential for:
+    - Detecting name shadowing
+    - Finding all references to a symbol (for rename)
+    - Detecting free variables in closures
+
+Building a codemod for RefactorPilot:
+  1. Define a CSTTransformer subclass that implements your transformation
+  2. Use QualifiedNameProvider + ScopeProvider + TypeInferenceProvider
+  3. Before applying any transformation, run your abstract interpretation
+     classifier (Section 2) on the function
+  4. Apply transformation only if classified as Zone 1 or 2
+  5. Run the differential fuzzer (Section 8) on the result
+  6. Run CrossHair (see below) if annotated contracts are present
+
+CROSSHAIR: SYMBOLIC EXECUTION FOR PYTHON CONTRACTS
+----------------------------------------------------
+CrossHair (pschanely, github.com/pschanely/CrossHair) is a Python tool that
+performs symbolic execution using the Z3 SMT solver to verify contracts and
+find behavioral differences between functions.
+
+Architecture:
+  - StateSpace: manages Z3 solver state and execution branches
+  - SymbolicFactory: creates symbolic values for Python types
+  - Execution: runs the Python function with symbolic inputs via
+    transparent proxying (overrides Python's attribute access, arithmetic,
+    comparison operators to intercept on symbolic values)
+  - Path exploration: explores all execution paths by branching on
+    symbolic conditions
+
+Key capabilities:
+
+  1. CONTRACT CHECKING: Given a function with preconditions and
+     postconditions (PEP 316 docstring format, icontract decorators, or
+     deal decorators), CrossHair finds counterexamples automatically.
+     Example:
+       def binary_search(lst: List[int], target: int) -> int:
+           """
+           pre: sorted(lst)
+           post: lst[__return__] == target or __return__ == -1
+           """
+
+  2. BEHAVIORAL DIFF: The diff_behavior() function takes two implementations
+     of the same function and finds inputs on which they differ:
+       from crosshair import diff_behavior
+       diffs = diff_behavior(original_func, refactored_func)
+
+  3. DESCRIBE BEHAVIOR: Generates a description of what a function does by
+     summarizing its behaviors across all paths.
+
+  4. TEST GENERATION: The "cover" command generates test cases that cover
+     all paths. Supports output as pytest fixtures.
+
+For RefactorPilot: diff_behavior() is directly applicable as the behavioral
+equivalence checker. Use it for functions with type annotations and reasonable
+complexity. It will find counterexamples if any exist within the SMT solver's
+capabilities.
+
+Limitations of CrossHair:
+  - Cannot analyze C extension modules (only pure Python)
+  - String operations over Z3's string solver can time out
+  - Functions with network/disk I/O must be isolated via contracts
+  - Does not guarantee correctness (concolic, not full symbolic execution)
+  - Large numeric ranges may not be covered
+
+HYPOTHESIS: PROPERTY-BASED TESTING FOR PYTHON
+-----------------------------------------------
+Hypothesis (hypothesisworks.io) is the premier property-based testing library
+for Python. Key integration: Hypothesis now supports CrossHair as an optional
+backend.
+
+CrossHair + Hypothesis integration:
+  from hypothesis import given, settings
+  from hypothesis import HealthCheck
+  from hypothesis.strategies import integers
+
+  @given(integers())
+  @settings(backend='crosshair', suppress_health_check=[HealthCheck.too_slow])
+  def test_behavioral_equivalence(x):
+      assert original(x) == refactored(x)
+
+This combines Hypothesis's structured input generation with CrossHair's
+symbolic counterexample finding for maximum coverage.
+
+ASTRAL TY: THE NEXT-GENERATION TYPE CHECKER
+---------------------------------------------
+Astral (creators of ruff and uv) announced "ty" in late 2024 as their new
+type checker for Python. ty takes a "gradual guarantee" approach: unknown
+types are treated permissively, so adding annotations to working code never
+introduces new errors.
+
+ty is designed for large, partially-typed codebases — exactly the production
+codebases that RefactorPilot will encounter. Monitor this project closely.
+
+EXACT SEARCH TERMS FOR SECTION 6
+----------------------------------
+"LibCST codemods TypeInferenceProvider mypy"
+"pyright programmatic API type inference Python"
+"CrossHair diff_behavior behavioral equivalence Python"
+"mypy daemon dmypy incremental type checking"
+"Python symbolic execution SMT Z3 contracts"
+"Hypothesis CrossHair backend property testing"
+"LibCST QualifiedNameProvider ScopeProvider"
+"Python abstract interpretation dynamic dispatch"
+"mypy plugin API custom type inference"
+"Python semantic refactoring safety analysis"
+
+KEY TOOLS (URLS AND REFERENCES)
+---------------------------------
+- LibCST: github.com/Instagram/LibCST, pip install libcst
+- mypy: mypy-lang.org, pip install mypy
+- pyright: github.com/microsoft/pyright, pip install pyright
+- CrossHair: github.com/pschanely/CrossHair, pip install crosshair-tool
+- Hypothesis: hypothesis.works, pip install hypothesis
+- libcst-mypy: github.com/Kludex/libcst-mypy
+- astral ty: astral.sh (monitor for release)
+
+
+--------------------------------------------------------------------------------
+SECTION 7 — GO SEMANTIC AND EDITOR-QUALITY TRANSFORMATION
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Go is RefactorPilot's best candidate for near-production-grade transformation
+trust. Reasons:
+  - Statically typed with no dynamic typing at all
+  - No eval, no exec, no macro system
+  - Explicit error handling (no implicit exceptions)
+  - Simple type system compared to Python's
+  - Excellent tooling with compiler-grade APIs
+  - gopls (the official language server) already implements correct rename/refactor
+
+The Go toolchain exposes exactly the APIs RefactorPilot needs:
+  - go/parser: parses source to ast.File
+  - go/ast: the abstract syntax tree types
+  - go/types: the compiler's type checker as a library
+  - go/packages: loads full type-checked package graphs
+  - golang.org/x/tools/go/ssa: SSA form for programs
+  - golang.org/x/tools/go/callgraph: call graph analysis
+  - gopls: the language server (provides rename, inline, extract)
+
+GO/TYPES: COMPILER-GRADE SEMANTIC INFORMATION
+----------------------------------------------
+The go/types package (golang.org/pkg/go/types) exposes the Go compiler's
+type checker as a reusable library. This is not a third-party reimplementation
+— it is the same type checking code used by go build.
+
+What go/types provides:
+  - Complete type information for every expression in a package
+  - Symbol resolution: exactly which definition does each name refer to?
+  - Type of every expression (including complex generic instantiations)
+  - Method sets: what methods does a given type implement?
+  - Interface satisfaction: does type T implement interface I?
+  - Scope analysis: complete scope tree for the entire package
+  - Constant evaluation: computed values for compile-time constants
+
+Usage pattern:
+  cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedSyntax | ...}
+  pkgs, _ := packages.Load(cfg, "./...")
+  pkg := pkgs[0]
+  typesInfo := pkg.TypesInfo  // contains all type information
+
+The types.Info struct contains:
+  - Defs: map from *ast.Ident to *types.Object (all definitions)
+  - Uses: map from *ast.Ident to *types.Object (all uses)
+  - Types: map from ast.Expr to types.TypeAndValue (type of every expression)
+  - Scopes: map from ast.Node to *types.Scope (scope at each node)
+  - Instances: type instantiation information for generics
+
+For RefactorPilot: load all type information before applying any
+transformation. Every transformation must go through a go/types check
+after application to verify it produces a valid typed program.
+
+GOPLS RENAME ARCHITECTURE (STUDY THIS IN DETAIL)
+-------------------------------------------------
+gopls (golang.org/x/tools/gopls) implements workspace-wide, semantics-correct
+rename. The implementation is in:
+  gopls/internal/lsp/source/rename.go
+  gopls/internal/lsp/source/rename_check.go
+  golang.org/x/tools/refactor/satisfy/find.go
+
+The rename algorithm is a two-phase process:
+
+  PHASE 1: prepareRename()
+    - Resolve the identifier being renamed to its *types.Object
+    - Check that the symbol is renameable (not a package name, not a
+      built-in, not an exported method from a standard library type)
+    - Return the current name for display in the editor dialog
+
+  PHASE 2: rename() (the actual rename)
+    Step 1: Find all references to the symbol across the workspace.
+            Uses go/packages to load all packages and cross-reference
+            the symbol object.
+
+    Step 2: Run conflict checks. The rename_check.go file contains
+            an extensive series of checks:
+              - SHADOWING CHECK: would the new name shadow an existing
+                symbol at any reference site?
+              - LABEL CLASH: would the rename clash with a goto label?
+              - EXPORTED PACKAGE CHECK: if renaming from unexported to
+                exported, are all references valid in all contexts?
+              - INTERFACE SATISFACTION: does renaming a method break
+                any interface implementations?
+              - SELECTOR PROMOTION: does renaming an embedded field
+                change which promoted methods are visible?
+
+    Step 3: Run the satisfy.Finder from refactor/satisfy. This finds
+            all interface satisfaction constraints that would be affected
+            by the rename. For example:
+              type Writer interface { Write([]byte) (int, error) }
+              type MyStruct struct{}
+              func (m *MyStruct) Write(p []byte) (int, error) {...}
+            If you rename MyStruct.Write, you must also rename it in
+            the Writer interface definition and everywhere the interface
+            is used.
+
+    Step 4: Apply the rename: for each reference found in step 1,
+            create a text edit. Collect all edits and return them as
+            a workspace edit.
+
+For RefactorPilot: this is the exact algorithm to implement for any
+renaming transformation. The satisfy.Finder is the critical component
+you must replicate — without it, renames will silently break interface
+contracts.
+
+GOPLS INLINE ARCHITECTURE
+---------------------------
+The gopls inline function implementation is documented at:
+golang.org/x/tools/internal/refactor/inline
+
+The inline refactoring is described as "aim for correctness first of all."
+The documentation lists 15+ semantic hazards that make inlining non-trivial:
+
+  1. Name capture: if the inlined code refers to a name X and the call
+     site has a different X in scope, the inlined code gets the wrong X.
+
+  2. Multiple-return expansion: inlining a function that returns (a, b)
+     into a context that assigns to x, y requires special care about
+     temporaries when the arguments have side effects.
+
+  3. Defer ordering: if the function being inlined contains defer
+     statements, they fire at the end of the inlined function's scope,
+     not at the end of the containing function. Naively inlining changes
+     when defers fire.
+
+  4. Named return values: if the function uses named return values and
+     the inlined code modifies them via panic/recover, the behavior changes.
+
+  5. Receiver pointer vs value: if a method has a pointer receiver and
+     the call is made on a value, inlining requires taking the address.
+
+  6. Interface method calls: if the call is through an interface, inlining
+     requires type asserting first (and this assertion may fail at runtime
+     for different dynamic types).
+
+Each of these hazards has a specific check and transformation in gopls's
+inline implementation. For RefactorPilot: before attempting to inline any
+function call in Go code, run all of these checks.
+
+THE GORENAME LEGACY: REFACTOR/SATISFY
+--------------------------------------
+gorename (golang.org/x/tools/refactor/rename) was the predecessor to gopls
+rename. It is now deprecated, but its source code is extremely instructive.
+
+The refactor/satisfy package implements the "Finder" — a type inference
+engine that determines which assignments in the program are implicit interface
+assertions. It walks the entire AST looking for:
+  - Function call arguments that could be interfaces
+  - Channel sends
+  - Struct field initializations
+  - Return statements
+  - Type assertions
+  - Assignments
+
+For each such site, it infers the set of "constraint pairs": if you rename
+method M on type T to M', you must also change every interface that T
+satisfies where M is listed. The Finder produces this complete set of
+constraints.
+
+GO/SSA: STATIC SINGLE ASSIGNMENT FOR ANALYSIS
+-----------------------------------------------
+golang.org/x/tools/go/ssa provides a Static Single Assignment (SSA) form
+for Go programs. This is an intermediate representation suitable for:
+  - Call graph construction (using golang.org/x/tools/go/callgraph)
+  - Points-to analysis (using golang.org/x/tools/go/pointer)
+  - Data flow analysis
+  - Finding all call sites of a function
+
+For RefactorPilot: use go/ssa + pointer analysis to build a conservative
+call graph before making any transformation. This tells you exactly which
+functions are called from which other functions, and whether any interface
+methods have multiple possible implementations.
+
+UNSAFE PACKAGE: THE HARD BOUNDARY
+-----------------------------------
+Go's unsafe package must be imported explicitly:
+  import "unsafe"
+
+Any file that imports "unsafe" bypasses Go's type safety guarantees. This
+is trivially detectable by scanning the import list. RefactorPilot must:
+  1. Flag any function in a file that imports unsafe as Zone 4 (must refuse)
+  2. Report: "This file uses the unsafe package. Transformation requires
+     manual review to ensure pointer arithmetic correctness."
+
+Additionally, even without explicit import, the reflect package at certain
+usage patterns can bypass type safety:
+  - reflect.Value.Pointer(): returns raw pointer value
+  - reflect.Value.Set(): sets arbitrary values via reflection
+  - reflect.NewAt(): creates arbitrary pointer values
+
+Detect reflect usage via go/types: check if any call in the function resolves
+to reflect.Value.Pointer, reflect.Value.Set, or reflect.NewAt.
+
+CONCURRENCY SAFETY
+-------------------
+Go's concurrency model (goroutines + channels) creates transformation hazards
+that pure sequential analysis misses. Key patterns that must be refused:
+
+  1. GOROUTINE-SHARED MUTABLE STATE: a variable declared outside a goroutine
+     literal and mutated inside it creates a data race. Extracting the
+     goroutine body into a separate function may silently introduce a race.
+
+  2. CHANNEL DIRECTION CHANGES: if a transformation changes how a channel
+     is passed (bidirectional to directional), it may break callers.
+
+  3. SYNC PRIMITIVE COPIES: sync.Mutex, sync.WaitGroup, etc. must not be
+     copied after first use. Any transformation that copies these (e.g.,
+     passing a Mutex by value) introduces undefined behavior.
+
+Use go/vet patterns (the race detector annotations) to detect these. The
+go vet tool's findings should be consulted before marking a transformation
+as safe.
+
+EXACT SEARCH TERMS FOR SECTION 7
+----------------------------------
+"gopls rename refactor internals golang.org/x/tools"
+"go/types compiler type checker library API"
+"go/packages load type checked programs"
+"gorename satisfy interface constraint finder"
+"Go SSA golang.org/x/tools/go/ssa"
+"gopls inline correctness hazards refactor"
+"Go pointer analysis call graph tools"
+"Go concurrency race condition static analysis"
+"unsafe package Go static detection"
+"go vet race detector analysis"
+
+KEY RESOURCES
+--------------
+- gopls source: github.com/golang/tools/tree/master/gopls
+- gopls transformation docs: go.dev/gopls/features/transformation
+- go/types docs: pkg.go.dev/go/types
+- go/packages docs: pkg.go.dev/golang.org/x/tools/go/packages
+- go/ssa docs: pkg.go.dev/golang.org/x/tools/go/ssa
+- refactor/satisfy: pkg.go.dev/golang.org/x/tools/refactor/satisfy
+- Alan Donovan's "Go Tools" talk: google "Alan Donovan go tools OSCON 2014"
+  — this is the canonical introduction to building Go analysis tools
+
+
+--------------------------------------------------------------------------------
+SECTION 8 — PROPERTY-BASED AND FUZZ DIFFERENTIAL VALIDATION
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+Before formal validation is complete, and as a complementary layer even after,
+property-based testing (PBT) and differential fuzzing provide practical
+confidence that a transformation is correct.
+
+The key insight: you do not need an oracle to test equivalence. You need
+only to run both the original and the transformed code on the same inputs
+and check that their outputs match. This is differential testing.
+Combined with property-based generation of structured inputs and metamorphic
+relations, this becomes a powerful validation tool that ships in days.
+
+DIFFERENTIAL TESTING
+---------------------
+The core idea (McKeeman 1998, "Differential Testing for Software"):
+  Given two implementations F1 and F2 that are supposed to compute the
+  same function:
+    1. Generate an input x
+    2. Compute F1(x) and F2(x)
+    3. If F1(x) != F2(x): report the discrepancy as a bug
+
+This requires no oracle (you don't need to know the correct answer) and
+produces a concrete counterexample directly.
+
+For RefactorPilot, the differential test is:
+  original_function(x) == refactored_function(x)
+
+The challenge is generating rich enough inputs x to cover edge cases.
+Random testing catches obvious bugs but misses deep corner cases.
+
+HYPOTHESIS: PROPERTY-BASED TESTING FOR PYTHON
+-----------------------------------------------
+Hypothesis (hypothesis.works) is the state of the art for structured input
+generation in Python. It uses a combination of:
+
+  1. STRATEGIES: user-defined generators for structured data types
+     (integers, strings, lists, dicts, custom classes)
+  2. SHRINKING: when a test fails, Hypothesis automatically reduces the
+     failing input to the smallest input that still triggers the failure
+  3. DATABASE: remembers previously failing inputs across test runs
+
+Example for RefactorPilot:
+  from hypothesis import given, settings
+  from hypothesis.strategies import integers, lists, composite
+
+  @composite
+  def function_inputs(draw):
+      # Generate inputs matching the function's type signature
+      x = draw(integers(min_value=-1000, max_value=1000))
+      y = draw(lists(integers(), min_size=0, max_size=10))
+      return (x, y)
+
+  @given(function_inputs())
+  def test_equivalence(args):
+      x, y = args
+      assert original(*args) == refactored(*args)
+
+Hypothesis integration with CrossHair:
+  The @settings(backend='crosshair') option runs Hypothesis tests using
+  CrossHair's symbolic execution as the input generator. This combines
+  the structured generation of Hypothesis with the SMT-guided exploration
+  of CrossHair. For RefactorPilot: use this combination for Python functions
+  with type annotations.
+
+TYPE-DRIVEN INPUT GENERATION
+------------------------------
+For RefactorPilot, the key innovation is using the type information from
+pyright/go/types to automatically generate appropriate inputs for any
+function signature.
+
+For Python (using Hypothesis strategies + pyright types):
+  - int annotation -> integers()
+  - str annotation -> text()
+  - List[int] annotation -> lists(integers())
+  - Optional[T] annotation -> none() | strategy_for(T)
+  - Dict[str, int] annotation -> dictionaries(text(), integers())
+  - Custom class C -> builds(C, ...) with constructor argument strategies
+
+For Go (using go/types + go-fuzz or testing/fuzz):
+  - int -> rand.Int63() or fuzzer byte slice interpretation
+  - string -> fuzzer byte slice as UTF-8
+  - []T -> sized slice of T values
+  - struct -> field-by-field generation
+  - interface -> one of the concrete implementations
+
+The Go 1.18+ native fuzzing API is the cleanest interface:
+  func FuzzEquivalence(f *testing.F) {
+      f.Add(0, "initial")  // seed corpus
+      f.Fuzz(func(t *testing.T, n int, s string) {
+          r1 := original(n, s)
+          r2 := refactored(n, s)
+          if !reflect.DeepEqual(r1, r2) {
+              t.Fatalf("divergence: %v != %v", r1, r2)
+          }
+      })
+  }
+
+METAMORPHIC TESTING
+--------------------
+Metamorphic testing (Chen, Cheung, Yiu 1998 — Technical Report) is a
+property-based technique that does not require knowing the correct output.
+Instead, it relies on metamorphic relations (MRs): known relationships
+between inputs and outputs.
+
+A metamorphic relation is a statement of the form:
+  "If input I2 is related to input I1 by transformation T, then
+   output O2 = f(I2) should be related to output O1 = f(I1) by relation R."
+
+Example MRs for a sorting function:
+  - MR1: f(sorted(x)) == f(x) (idempotence)
+  - MR2: f(x + [y]) should contain y if y != min(x) (membership)
+  - MR3: f(reverse(x)) == reverse(f(x)) is FALSE for sorting (anti-MR)
+
+For source code transformations, metamorphic relations are the program
+transformation's guaranteed invariants:
+  - MR1: applying a semantics-preserving transformation T to the SOURCE code
+    before refactoring, and then refactoring, should produce the same result
+    as refactoring the original and then applying T to the OUTPUT.
+  - MR2: the refactored function applied to any input X should return the
+    same value as the original function applied to the same X.
+  - MR3: exception behavior should be preserved (if original raises TypeError
+    for input X, refactored must also raise TypeError for input X).
+
+Metamorphic testing can detect:
+  - Order sensitivity: does the transformation behave differently for
+    syntactically different but semantically equivalent inputs?
+  - Interaction bugs: does combining transformation A and B cause issues?
+  - Boundary conditions: does the refactored version handle edge cases
+    (empty list, None, max/min values) correctly?
+
+ROUND-TRIP DIFFERENTIAL TESTING
+---------------------------------
+For data-oriented transformations (Pydantic model refactoring, dataclass
+changes, serialization format changes), round-trip testing is particularly
+effective.
+
+Pattern:
+  1. Generate structured data that the original code can serialize.
+  2. Serialize with the original code.
+  3. Deserialize with the refactored code.
+  4. Assert the deserialized object equals the original.
+  5. Reserialize with the refactored code.
+  6. Assert the serialized form equals the original serialization.
+
+This detects:
+  - Field rename without migration
+  - Default value changes
+  - Optional field additions without backward compatibility
+  - Type coercion changes
+
+For Go: protobuf round-trip testing is particularly effective because
+gRPC services are a common target for refactoring.
+
+COVERAGE-GUIDED FUZZING FOR SEMANTIC RICHNESS
+----------------------------------------------
+Standard property-based testing generates inputs based on types and
+strategies, but does not consider the program's control flow. AFL-style
+coverage-guided fuzzing generates inputs that exercise different code paths.
+
+For RefactorPilot:
+  1. Instrument both original and refactored functions for branch coverage.
+  2. Run a fuzzer that maximizes coverage in the UNION of both functions.
+  3. Any input that exercises a branch in one function but not the other
+     is a candidate for divergence. Test these inputs with differential testing.
+
+The Python coverage module supports branch coverage measurement:
+  import coverage
+  cov = coverage.Coverage(branch=True)
+  cov.start()
+  result = original(x)
+  cov.stop()
+  branches = cov.get_data().arcs(source_file)
+
+For Go: the testing package's -covermode=atomic flag enables branch coverage.
+
+SHRINKING COUNTEREXAMPLES
+--------------------------
+When a differential test finds a counterexample, the raw input may be
+large and complex. Shrinking reduces it to the minimal failing input.
+
+Hypothesis does this automatically. For custom fuzzing, implement Delta
+Debugging (Zeller 1999) — a binary search algorithm for minimizing failing
+inputs. The ddmin algorithm:
+  1. Divide the input into chunks.
+  2. Try removing each chunk. If failure persists: remove that chunk.
+  3. Repeat until no further reduction is possible.
+
+The minimal counterexample is then fed into the CEGIS repair loop (Section 4),
+making repair much more tractable.
+
+ORACLE-FREE TESTING WITH ALGEBRAIC LAWS
+-----------------------------------------
+For pure mathematical functions, algebraic laws provide oracle-free test cases.
+Known laws applicable to common refactoring targets:
+
+  Commutativity: f(a, b) == f(b, a)
+  Associativity: f(f(a, b), c) == f(a, f(b, c))
+  Idempotency: f(f(x)) == f(x)
+  Invertibility: decode(encode(x)) == x
+  Monotonicity: if x <= y then f(x) <= f(y)
+  Distributivity: f(a + b) == f(a) + f(b)
+
+These can be automatically generated by analyzing the function's type
+signature and testing known algebraic structures.
+
+EXACT SEARCH TERMS FOR SECTION 8
+----------------------------------
+"differential testing program equivalence before after"
+"metamorphic testing source code transformation"
+"Hypothesis property-based testing Python equivalence"
+"CrossHair Hypothesis backend symbolic execution"
+"coverage-guided fuzzing semantic differential testing"
+"Go fuzzing testing.F behavioral equivalence"
+"round-trip testing serialization refactoring"
+"delta debugging shrinking counterexamples"
+"algebraic law testing oracle-free"
+"metamorphic relation compilation optimization"
+
+KEY PAPERS AND TOOLS
+---------------------
+1. Chen, Cheung, Yiu. "Metamorphic Testing: A New Approach for Generating
+   Next Test Cases." Technical Report HKUST-CS98-01, 1998.
+
+2. Segura, Fraser, Sanchez, Ruiz-Cortés. "A Survey on Metamorphic Testing."
+   IEEE TSE 2016. DOI: 10.1109/TSE.2016.2532875
+
+3. Hypothesis: hypothesis.works — doi:10.5281/zenodo.1412597
+
+4. Chen et al. "Compiler Optimization Testing Based on Optimization-Guided
+   Equivalence Transformations." arXiv:2504.04321, 2025.
+
+5. McKeeman, W.M. "Differential Testing for Software." DDJ 1998.
+
+6. Zeller, A. "Yesterday, My Program Worked. Today, It Does Not. Why?"
+   ESEC/FSE 1999. (Delta Debugging)
+
+7. Groce, Holzmann, Joshi. "Randomized Differential Testing as a Prelude to
+   Formal Verification." ICSE 2007.
+
+
+================================================================================
+PART B: APPLICATION DEVELOPMENT
+================================================================================
+
+
+--------------------------------------------------------------------------------
+SECTION 9 — OVERALL ARCHITECTURE OF REFACTORPILOT
+--------------------------------------------------------------------------------
+
+SYSTEM DESIGN OVERVIEW
+-----------------------
+RefactorPilot is a source-to-source refactoring validation system. The core
+loop is:
+
+  INPUT: (original_code, refactored_code, language, transformation_type)
+  OUTPUT: (verdict, confidence, counterexample | proof | explanation)
+
+  Where verdict is one of:
+    VALIDATED     — proven equivalent within bounds
+    LIKELY_SAFE   — no divergence found by fuzzing (N inputs tested)
+    UNCERTAIN     — could not verify or refute (SMT timeout)
+    INCORRECT     — divergence found + counterexample
+    REFUSED       — transformation refused due to dynamic features
+    REPAIRED      — incorrect, but CEGIS found a fix
+
+The system has 6 modules running as a pipeline with escalation:
+
+  +-------------------+
+  | Pre-Flight        |  Abstract interpretation classifier
+  | Classifier        |  Zones: Safe / Conservative / Refuse
+  +-------------------+
+          |
+          v (if not Refused)
+  +-------------------+
+  | Transformation    |  LibCST (Python) / go/ast (Go)
+  | Engine            |  Applies the actual code change
+  +-------------------+
+          |
+          v
+  +-------------------+
+  | Fast Differential |  Hypothesis/CrossHair (Python) / go fuzz (Go)
+  | Fuzzer            |  500-10,000 inputs, shrinking
+  +-------------------+
+          |
+          v (if fuzzer finds no divergence)
+  +-------------------+
+  | SMT Validator     |  Z3 product program check
+  | (Formal Layer)    |  Bounded, timeout-capped
+  +-------------------+
+          |
+          v (if validator finds divergence)
+  +-------------------+
+  | CEGIS Repair      |  SyGuS over repair DSL
+  | Loop              |  2-3 iterations max
+  +-------------------+
+          |
+          v
+  +-------------------+
+  | E-Graph           |  egg/egglog canonicalization
+  | Canonicalizer     |  Pre-normalization, post-extraction
+  +-------------------+
+
+VALIDATION CONFIDENCE MODEL
+-----------------------------
+RefactorPilot outputs a structured confidence score:
+
+  confidence = {
+    formal_validation: true/false/null,  // null if timeout
+    fuzz_inputs_tested: int,             // number of inputs tried
+    fuzz_divergences_found: int,         // 0 = no issues found
+    smells_detected: List[str],          // abstract interpretation warnings
+    zone: "safe" | "conservative" | "refused",
+    cegis_repair_found: true/false/null,
+    overall_confidence: 0.0 - 1.0       // composite score
+  }
+
+Confidence scoring formula:
+  if formal_validation == true:   confidence = 0.95 - 0.99
+  elif fuzz_tested > 10000 and fuzz_divergences == 0:  confidence = 0.85
+  elif fuzz_tested > 1000 and fuzz_divergences == 0:   confidence = 0.70
+  elif zone == "conservative":    max_confidence = 0.75
+  elif formal_validation == None: confidence *= 0.90  // timeout penalty
+
+DATA FLOW BETWEEN MODULES
+---------------------------
+Each module receives a TransformationContext object:
+  {
+    original_ast: parsed AST of original function
+    refactored_ast: parsed AST of refactored function
+    type_info: type checker output (pyright/go/types)
+    scope_analysis: scope analysis output
+    counterexamples: List[input] accumulated so far
+    repair_history: List[repair_attempts]
+    classification: PreFlightResult
+    metadata: {language, transformation_type, file_path, function_name}
+  }
+
+PERSISTENCE AND RESULT STORAGE
+--------------------------------
+Each validation run is stored with:
+  - Full original and refactored code (for reproducibility)
+  - All counterexamples found
+  - Full classifier output (including why code was refused)
+  - SMT formula size and solver time
+  - CEGIS iterations if repair was attempted
+  - Final verdict and confidence
+
+This enables: learning over time (which transformations are consistently
+correct), building a corpus for LLM fine-tuning, and auditing.
+
+
+--------------------------------------------------------------------------------
+SECTION 10 — MODULE 1: PRE-FLIGHT CLASSIFIER
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+Classify each function BEFORE attempting transformation. Output: zone
+classification + structured explanation.
+
+IMPLEMENTATION (PYTHON)
+------------------------
+Use a multi-layer AST analysis pipeline:
+
+  Layer 1: Pattern matching (fast, AST-only, no type information needed)
+    - Scan for eval(), exec(), compile() calls -> Zone 3
+    - Scan for __import__() calls with non-constant arguments -> Zone 3
+    - Scan for getattr() calls where second argument is not a string literal -> Zone 3
+    - Scan for direct use of frame inspection (sys._getframe, inspect.currentframe) -> Zone 3
+    - Scan for metaclass definitions -> Zone 3
+    - Scan for __getattr__/__setattr__/__getattribute__ overrides -> Zone 3
+
+  Layer 2: Scope analysis (LibCST ScopeProvider)
+    - Does the function capture mutable variables from outer scope? -> Zone 2
+    - Does the function define closures that capture its locals? -> Zone 2
+    - Are all callee functions in the same package? -> Zone 1/2 based on other criteria
+
+  Layer 3: Type analysis (pyright/go types)
+    - Does any parameter have type Any or unknown? -> Zone 2
+    - Does the function call methods on polymorphic receivers (interface type)? -> Zone 2
+    - Are all types concrete and fully resolved? -> Zone 1 candidate
+
+  Layer 4: Side effect analysis
+    - Does the function mutate any of its arguments? -> Zone 2
+    - Does the function have global state access? -> Zone 2/3
+    - Is the function pure (no mutation of any state)? -> Zone 1 candidate
+
+CODE STRUCTURE (Python):
+
+  from dataclasses import dataclass
+  from enum import Enum
+  import libcst as cst
+  from libcst.metadata import MetadataWrapper, QualifiedNameProvider, ScopeProvider
+
+  class Zone(Enum):
+      SAFE = 1
+      CONSERVATIVE = 2
+      REFUSE = 3
+
+  @dataclass
+  class ClassificationResult:
+      zone: Zone
+      reasons: list[str]
+      unsafe_nodes: list[str]  # AST node descriptions
+      confidence: float
+
+  class PreFlightClassifier(cst.CSTVisitor):
+      def __init__(self):
+          self.issues = []
+          self.zone = Zone.SAFE
+
+      def visit_Call(self, node: cst.Call):
+          if self._is_dangerous_call(node):
+              self.zone = Zone.REFUSE
+              self.issues.append(f"Dynamic call: {node}")
+
+      def _is_dangerous_call(self, node):
+          func = node.func
+          if isinstance(func, cst.Name):
+              return func.value in ('eval', 'exec', 'compile', 'getattr')
+          return False
+
+      def get_result(self) -> ClassificationResult:
+          return ClassificationResult(
+              zone=self.zone,
+              reasons=self.issues,
+              unsafe_nodes=[],
+              confidence=1.0 if self.zone == Zone.SAFE else 0.0
+          )
+
+  def classify_function(source_code: str) -> ClassificationResult:
+      module = cst.parse_module(source_code)
+      wrapper = MetadataWrapper(module)
+      classifier = PreFlightClassifier()
+      wrapper.visit(classifier)
+      return classifier.get_result()
+
+IMPLEMENTATION (GO)
+--------------------
+For Go, use go/analysis framework:
+
+  package classifier
+
+  import (
+      "go/ast"
+      "go/types"
+      "golang.org/x/tools/go/analysis"
+  )
+
+  func ClassifyFunction(fn *ast.FuncDecl, info *types.Info) ClassificationResult {
+      // Check for unsafe import
+      // Check for reflect.Value mutation methods
+      // Check for goroutine-captured variables
+      // Check for channel direction changes
+  }
+
+
+--------------------------------------------------------------------------------
+SECTION 11 — MODULE 2: TRANSFORMATION ENGINE
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+Apply the actual source transformation. This module wraps the LLM call or
+rule engine that produces the refactored code.
+
+PYTHON TRANSFORMATION WITH LIBCST
+-----------------------------------
+All Python transformations must be implemented as LibCST codemods:
+
+  import libcst as cst
+  from libcst.codemod import CodemodContext, VisitorBasedCodemodCommand
+
+  class ExtractMethodCommand(VisitorBasedCodemodCommand):
+      DESCRIPTION = "Extract a block of code into a new method"
+
+      def visit_FunctionDef(self, node: cst.FunctionDef):
+          # Record functions for potential extraction
+          pass
+
+      def leave_FunctionDef(self, original: cst.FunctionDef,
+                             updated: cst.FunctionDef) -> cst.FunctionDef:
+          # Apply extraction if this function contains the target block
+          return updated
+
+The critical rule: ALL transformations must preserve the concrete syntax tree
+except for the intended changes. LibCST's round-trip parsing guarantees this.
+Never use ast.unparse() or string manipulation — it loses formatting information
+and is fragile.
+
+LLM INTEGRATION
+----------------
+When using an LLM to generate the refactored code:
+  1. Feed both the original function AND the LibCST CST to the LLM
+  2. Ask the LLM to output the transformation as a JSON patch
+     specifying what changed at which CST node paths, not a full rewrite
+  3. Apply the JSON patch via LibCST's transformation API
+  4. This preserves formatting, comments, and all un-changed code exactly
+
+GO TRANSFORMATION
+------------------
+For Go, use ast.File + go/ast transformations:
+
+  import (
+      "go/ast"
+      "go/format"
+      "go/parser"
+      "go/token"
+      "golang.org/x/tools/go/ast/astutil"
+  )
+
+  func ApplyTransformation(src string, transform func(*ast.File)) (string, error) {
+      fset := token.NewFileSet()
+      file, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+      if err != nil { return "", err }
+
+      transform(file)
+
+      var buf bytes.Buffer
+      format.Node(&buf, fset, file)
+      return buf.String(), nil
+  }
+
+After transformation: run go/types.Check() on the transformed file to verify
+it type-checks. If it fails type checking, the transformation is immediately
+invalid regardless of semantic correctness.
+
+
+--------------------------------------------------------------------------------
+SECTION 12 — MODULE 3: DIFFERENTIAL FUZZ VALIDATOR (FAST LAYER)
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+Run 500-10,000 generated inputs through both original and refactored functions.
+Find any divergence. This module ships first and provides immediate value.
+
+PYTHON IMPLEMENTATION
+----------------------
+import inspect
+from hypothesis import given, settings, HealthCheck
+from hypothesis.strategies import composite, from_type
+from crosshair import diff_behavior
+
+def generate_strategy_for_type(annotation):
+    """Convert type annotation to Hypothesis strategy."""
+    from hypothesis import strategies as st
+    if annotation == int: return st.integers()
+    if annotation == str: return st.text()
+    if annotation == float: return st.floats(allow_nan=False)
+    if annotation == bool: return st.booleans()
+    # Add more type handlers
+    return from_type(annotation)
+
+def fuzz_differential_validate(original_fn, refactored_fn, n_inputs=1000):
+    """
+    Run differential fuzzing between two function implementations.
+    Returns: (success: bool, counterexample: any | None, inputs_tested: int)
+    """
+    sig = inspect.signature(original_fn)
+    param_strategies = {}
+    for name, param in sig.parameters.items():
+        if param.annotation != inspect.Parameter.empty:
+            param_strategies[name] = generate_strategy_for_type(param.annotation)
+
+    counterexamples = []
+
+    @given(**param_strategies)
+    @settings(max_examples=n_inputs,
+              suppress_health_check=[HealthCheck.too_slow])
+    def test_equiv(**kwargs):
+        r1 = original_fn(**kwargs)
+        r2 = refactored_fn(**kwargs)
+        if r1 != r2:
+            counterexamples.append({'inputs': kwargs, 'original': r1, 'refactored': r2})
+            raise AssertionError(f"Divergence on {kwargs}: {r1} != {r2}")
+
+    try:
+        test_equiv()
+        return True, None, n_inputs
+    except AssertionError:
+        return False, counterexamples[0], len(counterexamples)
+
+CROSSHAIR DIFF BEHAVIOR
+------------------------
+For functions with type annotations, use CrossHair directly:
+
+  from crosshair.core_and_target import diff_behavior
+  from crosshair.options import AnalysisOptionSet
+
+  def symbolic_differential_validate(original_fn, refactored_fn):
+      options = AnalysisOptionSet(per_condition_timeout=10)
+      diffs = list(diff_behavior(original_fn, refactored_fn, options))
+      if diffs:
+          return False, diffs[0], 0  # counterexample found
+      return True, None, 0           # no counterexample found
+
+GO IMPLEMENTATION
+------------------
+Write a fuzz test generator that creates fuzz targets:
+
+  func GenerateFuzzTest(originalPkg, refactoredPkg, funcName string) string {
+      return fmt.Sprintf(`
+  func FuzzEquivalence_%s(f *testing.F) {
+      f.Fuzz(func(t *testing.T, data []byte) {
+          // Decode inputs from fuzz bytes
+          var input InputType
+          if err := json.Unmarshal(data, &input); err != nil { return }
+
+          r1 := %s.%s(input)
+          r2 := %s.%s(input)
+
+          if !reflect.DeepEqual(r1, r2) {
+              t.Fatalf("divergence: %%v != %%v", r1, r2)
+          }
+      })
+  }`, funcName, originalPkg, funcName, refactoredPkg, funcName)
+  }
+
+Then run: go test -fuzz FuzzEquivalence_FunctionName -fuzztime=30s
+
+RESULT AGGREGATION
+-------------------
+The fuzzer reports:
+  - Total inputs tested
+  - Number of divergences found
+  - Shrunk minimal counterexample
+  - Confidence score based on coverage (if coverage tracking enabled)
+
+
+--------------------------------------------------------------------------------
+SECTION 13 — MODULE 4: SMT / FORMAL VALIDATOR
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+For functions that pass the fuzzer, run a bounded formal validator using Z3.
+This is the "translation validation" step in the spirit of Alive2.
+
+THE CORE SMT ENCODING
+----------------------
+For a function pair (F_orig, F_refac) with shared input signature:
+
+  1. NORMALIZE: convert both to a common three-address code IR
+  2. UNROLL LOOPS: unroll loops to bound K (start with K=3)
+  3. INLINE CALLS: inline calls to depth D (start with D=2)
+  4. ENCODE AS SMT:
+       For each variable V at each program point P: create Z3 variable V_P
+       For each statement "V = expr": add Z3 clause V_P = encode(expr)
+       Encode both programs in the same Z3 solver
+       Inputs shared: assert input_orig = input_refac
+       Outputs diverged: assert output_orig != output_refac
+  5. SOLVE: if UNSAT (no counterexample): programs are equivalent within bounds
+             if SAT: extract the model as a counterexample
+             if timeout: return UNCERTAIN
+
+PYTHON IMPLEMENTATION WITH Z3
+-------------------------------
+from z3 import *
+
+class SMTValidator:
+    def __init__(self, timeout_seconds=30):
+        self.timeout = timeout_seconds * 1000  # Z3 uses milliseconds
+
+    def validate(self, orig_ir, refac_ir):
+        """
+        Validate that refac_ir refines orig_ir.
+        orig_ir and refac_ir are three-address code representations.
+        Returns: ValidationResult
+        """
+        s = Solver()
+        s.set("timeout", self.timeout)
+
+        # Create symbolic inputs (shared between both programs)
+        inputs = self._create_symbolic_inputs(orig_ir.params)
+
+        # Encode both programs
+        orig_state = self._encode_ir(orig_ir, inputs, prefix="orig")
+        refac_state = self._encode_ir(refac_ir, inputs, prefix="refac")
+
+        # Assert input equality (same inputs to both)
+        for orig_in, refac_in in zip(orig_state.inputs, refac_state.inputs):
+            s.add(orig_in == refac_in)
+
+        # Assert output divergence (looking for a counterexample)
+        outputs_differ = Or([
+            orig_state.output != refac_state.output,
+            orig_state.exceptions != refac_state.exceptions
+        ])
+        s.add(outputs_differ)
+
+        result = s.check()
+
+        if result == unsat:
+            return ValidationResult(verdict="VALIDATED", confidence=0.95)
+        elif result == sat:
+            model = s.model()
+            cex = self._extract_counterexample(model, inputs)
+            return ValidationResult(verdict="INCORRECT", counterexample=cex)
+        else:  # unknown (timeout)
+            return ValidationResult(verdict="UNCERTAIN", confidence=0.5)
+
+    def _encode_ir(self, ir, inputs, prefix):
+        # Walk the three-address code IR, creating Z3 variables
+        # and adding constraints for each statement
+        state = {}
+        for stmt in ir.statements:
+            if isinstance(stmt, AssignStmt):
+                var = Int(f"{prefix}_{stmt.target}_{stmt.line}")
+                state[stmt.target] = var + self._encode_expr(stmt.expr, state)
+        return ProgramState(state, inputs)
+
+HANDLING MEMORY AND REFERENCES
+--------------------------------
+Python's reference semantics require careful encoding. Key rules:
+  - Immutable objects (int, str, tuple, frozenset): encode as value types
+  - Mutable objects (list, dict, set, custom classes): encode as arrays
+    in the Z3 array theory
+  - Function calls with side effects: encode as abstract functions with
+    precondition/postcondition constraints (Hoare triples)
+  - Exception paths: encode as a separate boolean output per exception type
+
+LOOP HANDLING
+--------------
+For bounded loop verification:
+  - Detect loops using control flow graph analysis
+  - Unroll each loop K times, adding a "loop may continue" boolean variable
+  - Add constraint: if "loop may continue" is true in any unroll step,
+    the result is UNDETERMINED (not VERIFIED)
+  - This ensures no false positives while accepting some false negatives
+
+TIMEOUT AND FALLBACK
+---------------------
+  if result is UNCERTAIN:
+    escalate_to_llm_prediction(orig_ir, refac_ir)
+    then fuzz_with_coverage_guidance(orig_fn, refac_fn)
+    report confidence = 0.55  # LLM + fuzzing but no formal proof
+
+
+--------------------------------------------------------------------------------
+SECTION 14 — MODULE 5: CEGIS REPAIR LOOP
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+When a counterexample is found, attempt automatic repair of the incorrect
+transformation using CEGIS over a bounded repair DSL.
+
+THE REPAIR DSL
+---------------
+Define a DSL of parameterized repair operations:
+
+  repair_ops = [
+      ReplaceExpr(location: ASTPath, new_expr: Expr),
+      AddNoneCheck(location: ASTPath),
+      AddTypeCast(location: ASTPath, target_type: Type),
+      SwapArgs(location: ASTPath, i: int, j: int),
+      RemoveOffByOne(location: ASTPath),  # changes <= to < or vice versa
+      InlineConstant(location: ASTPath),
+      AddDefaultReturn(location: ASTPath),
+  ]
+
+  # Bounded search: try single ops first, then pairs
+  search_space = (
+      [op for op in repair_ops] +        # depth 1
+      [(op1, op2) for op1 in repair_ops  # depth 2
+                  for op2 in repair_ops]
+  )
+
+THE CEGIS LOOP IMPLEMENTATION
+-------------------------------
+def cegis_repair(original_fn, incorrect_refac_fn, counterexample, max_iter=5):
+    counterexamples = [counterexample]
+    repair_history = []
+
+    for iteration in range(max_iter):
+        # SYNTHESIS: find candidate repair consistent with all counterexamples
+        candidate_repair = synthesize_repair(incorrect_refac_fn, counterexamples)
+        if candidate_repair is None:
+            return RepairResult(success=False, reason="Search space exhausted")
+
+        # Apply the repair
+        repaired_fn = apply_repair(incorrect_refac_fn, candidate_repair)
+        repair_history.append(candidate_repair)
+
+        # VERIFICATION: check if repair is globally correct
+        validation_result = fuzz_then_smt_validate(original_fn, repaired_fn)
+
+        if validation_result.verdict == "VALIDATED":
+            return RepairResult(success=True, repaired_fn=repaired_fn,
+                               repair_applied=candidate_repair, iterations=iteration+1)
+        elif validation_result.verdict == "INCORRECT":
+            counterexamples.append(validation_result.counterexample)
+        else:  # UNCERTAIN
+            # Fuzzing says probably ok, flag for human review
+            return RepairResult(success=True, repaired_fn=repaired_fn,
+                               requires_review=True)
+
+    return RepairResult(success=False, reason="Max iterations exceeded",
+                       repair_history=repair_history)
+
+SYNTHESIS USING Z3
+-------------------
+def synthesize_repair(fn, counterexamples):
+    """
+    Find a repair from the DSL that makes fn correct on all counterexamples.
+    Uses Z3 to solve the synthesis constraint.
+    """
+    s = Solver()
+
+    # For each DSL operation, create boolean selector variables
+    op_selectors = [Bool(f"op_{i}") for i in range(len(repair_ops))]
+
+    # For each counterexample, add constraint:
+    # selected_ops(fn)(counterexample) == original(counterexample)
+    for cex in counterexamples:
+        for i, (op, selector) in enumerate(zip(repair_ops, op_selectors)):
+            repaired = apply_op_symbolically(fn, op)
+            s.add(Implies(selector,
+                         repaired(cex.inputs) == cex.expected_output))
+
+    # At most one repair operation active
+    s.add(AtMost(*op_selectors, 1))
+    s.add(AtLeast(*op_selectors, 1))
+
+    if s.check() == sat:
+        model = s.model()
+        for i, selector in enumerate(op_selectors):
+            if model[selector]:
+                return repair_ops[i]
+    return None
+
+
+--------------------------------------------------------------------------------
+SECTION 15 — MODULE 6: E-GRAPH CANONICALIZATION
+--------------------------------------------------------------------------------
+
+PURPOSE
+-------
+Before validation, normalize both programs to a canonical form. After repair,
+extract the most idiomatic form. Use the egg library.
+
+PYTHON INTEGRATION
+-------------------
+Since egg is Rust-based, integrate via:
+  1. A Python binding (egg has Python bindings via PyO3)
+  2. A subprocess call to a Rust CLI tool
+  3. Reimplementing the core e-graph in Python (for simple rule sets)
+
+For a simple expression-level canonicalization, implement in Python directly:
+
+  class EGraphNode:
+      def __init__(self, op, *children):
+          self.op = op  # operator or value
+          self.children = list(children)  # child e-class IDs
+
+  class EGraph:
+      def __init__(self):
+          self.eclasses = {}   # eclass_id -> set of EGraphNode
+          self.id_counter = 0
+
+      def add(self, node: EGraphNode) -> int:
+          """Add a node and return its e-class ID."""
+          eclass_id = self.id_counter
+          self.id_counter += 1
+          self.eclasses[eclass_id] = {node}
+          return eclass_id
+
+      def union(self, id1: int, id2: int):
+          """Merge two e-classes."""
+          if id1 != id2:
+              self.eclasses[id1].update(self.eclasses[id2])
+              del self.eclasses[id2]
+
+      def apply_rewrite(self, rule):
+          """Apply a rewrite rule everywhere in the e-graph."""
+          for eclass_id, nodes in list(self.eclasses.items()):
+              for node in list(nodes):
+                  if rule.matches(node):
+                      new_node = rule.apply(node)
+                      new_id = self.add(new_node)
+                      self.union(eclass_id, new_id)
+
+REWRITE RULES FOR PYTHON
+--------------------------
+  Rules = [
+      # Arithmetic
+      Rule("x + 0", "x"),
+      Rule("x * 1", "x"),
+      Rule("x * 0", "0"),
+      Rule("x - x", "0"),
+      Rule("x / 1", "x"),
+      Rule("-(-x)", "x"),
+
+      # Boolean
+      Rule("not (not x)", "x"),
+      Rule("x and True", "x"),
+      Rule("x or False", "x"),
+      Rule("x and False", "False"),
+      Rule("x or True", "True"),
+
+      # String
+      Rule('x + ""', "x"),
+      Rule('"" + x', "x"),
+      Rule("str(str(x))", "str(x)"),
+
+      # List
+      Rule("list(list(x))", "list(x)"),
+      Rule("len(list(x))", "len(x)"),  # type-guarded: x must be Sized
+
+      # Conditional
+      Rule("x if True else y", "x"),
+      Rule("x if False else y", "y"),
+  ]
+
+GO E-GRAPH REWRITE RULES
+--------------------------
+  // Type-safe Go simplifications
+  Rules = []Rule{
+      {"x + 0", "x"},
+      {"x * 1", "x"},
+      {"len([]T{})", "0"},
+      {"append(nil, x...)", "x"},
+      {"strings.Join([]string{x}, \"\")", "x"},
+  }
+
+
+--------------------------------------------------------------------------------
+SECTION 16 — TECHNOLOGY STACK RECOMMENDATIONS
+--------------------------------------------------------------------------------
+
+CORE LANGUAGE: PYTHON
+----------------------
+Python is the right implementation language because:
+  - Both target languages (Python, Go) have excellent Python APIs
+  - Z3 has a mature Python API (z3-solver)
+  - Hypothesis, LibCST, mypy, pyright all have Python APIs
+  - Rapid prototyping with good enough performance
+
+For performance-critical parts (e-graph engine, SMT formula construction):
+  - Consider Rust bindings via PyO3
+  - Or use subprocess calls to Rust/Go tools
+
+DEPENDENCIES
+-------------
+  Core:
+    z3-solver>=4.12.0        # SMT solver
+    libcst>=1.1.0            # Python CST manipulation
+    hypothesis>=6.80.0       # Property-based testing
+    crosshair-tool>=0.0.90   # Symbolic execution
+    mypy>=1.5.0              # Type checking
+    pyright>=1.1.350         # Type inference (subprocess)
+
+  Analysis:
+    networkx>=3.0            # Control flow graphs
+    sympy>=1.12              # Symbolic mathematics (for algebraic laws)
+
+  Storage:
+    sqlite3 (stdlib)         # Result storage
+    pydantic>=2.0            # Data validation/modeling
+
+  Serving:
+    fastapi>=0.100           # REST API
+    uvicorn>=0.23            # ASGI server
+    redis>=4.6               # Queue for async validation jobs
+
+  Go support:
+    subprocess calls to:
+      go/types checker
+      gopls
+      go test -fuzz
+
+DIRECTORY STRUCTURE
+--------------------
+  refactorpilot/
+  ├── classifier/
+  │   ├── preflight.py       # Multi-layer classifier
+  │   ├── python_rules.py    # Python-specific AST patterns
+  │   └── go_rules.go        # Go-specific analysis
+  ├── transformer/
+  │   ├── libcst_engine.py   # LibCST-based Python transforms
+  │   └── goast_engine.go    # go/ast-based Go transforms
+  ├── fuzzer/
+  │   ├── hypothesis_diff.py # Hypothesis-based differential fuzzer
+  │   ├── crosshair_diff.py  # CrossHair symbolic diff
+  │   └── go_fuzz.go         # Go native fuzzing
+  ├── validator/
+  │   ├── smt_validator.py   # Z3-based bounded formal validator
+  │   ├── ir.py              # Three-address code IR
+  │   └── product_program.py # Product program construction
+  ├── repair/
+  │   ├── cegis.py           # CEGIS repair loop
+  │   ├── repair_dsl.py      # Repair operation DSL
+  │   └── synthesizer.py     # Z3-based synthesis
+  ├── canonicalization/
+  │   ├── egraph.py          # E-graph implementation
+  │   └── rewrite_rules.py   # Rewrite rule library
+  ├── api/
+  │   ├── server.py          # FastAPI server
+  │   └── routes.py          # API endpoints
+  └── storage/
+      └── db.py              # SQLite result storage
+
+
+--------------------------------------------------------------------------------
+SECTION 17 — IMPLEMENTATION ROADMAP AND MILESTONES
+--------------------------------------------------------------------------------
+
+PHASE 1: FOUNDATION (WEEKS 1-4)
+---------------------------------
+Goal: Working differential fuzzer for Python and Go.
+Deliverables:
+  - LibCST parsing and round-trip for Python functions
+  - Pre-flight classifier Layer 1 (AST pattern matching)
+  - Hypothesis-based differential fuzzer for typed Python functions
+  - CrossHair integration for diff_behavior()
+  - Go: go test -fuzz harness generator
+  - REST API: /validate endpoint that runs fuzzer
+  - Result storage schema
+  - README, tests
+
+Success metric: Can run 1000 inputs on any Python function pair and report
+divergences within 30 seconds.
+
+PHASE 2: FORMAL VALIDATOR (WEEKS 5-10)
+-----------------------------------------
+Goal: Bounded SMT-based formal validation for simple Python functions.
+Deliverables:
+  - Three-address code IR for Python (handle: arithmetic, comparisons,
+    simple list/dict operations, function calls as abstract functions)
+  - Z3 SMT encoding of the IR
+  - Product program construction
+  - Loop unrolling to bound K
+  - Call inlining to depth D
+  - Pre-flight classifier Layers 2-3 (type analysis, scope analysis)
+  - Classification-to-confidence mapping
+  - Integration: fuzzer -> SMT escalation pipeline
+
+Success metric: Can formally validate 80% of pure Python functions with
+no dynamic features, within a 30-second timeout.
+
+PHASE 3: REPAIR LOOP (WEEKS 11-14)
+-------------------------------------
+Goal: CEGIS repair for simple incorrect transformations.
+Deliverables:
+  - Repair DSL implementation (6-8 atomic operations)
+  - CEGIS loop (synthesizer + verifier integration)
+  - Z3-based repair synthesis
+  - Ranking function for candidate repairs
+  - Integration: validator -> repair -> re-validate pipeline
+
+Success metric: Can automatically repair 30% of simple incorrect
+transformations (off-by-one errors, argument order mistakes, missing
+None checks) within 10 iterations.
+
+PHASE 4: E-GRAPH CANONICALIZATION (WEEKS 15-16)
+-------------------------------------------------
+Goal: Pre-normalization and post-extraction using equality saturation.
+Deliverables:
+  - Python e-graph implementation
+  - Rewrite rule library (50+ rules for Python, 30+ for Go)
+  - Integration with pre-validation pipeline
+  - Benchmarks: does canonicalization reduce SMT formula size?
+
+Success metric: Canonicalization reduces SMT solving time by >20% on
+the test suite.
+
+PHASE 5: GO FORMAL VALIDATOR (WEEKS 17-22)
+--------------------------------------------
+Goal: Extend the formal validator to handle Go code.
+Deliverables:
+  - Go IR extraction from go/ssa
+  - Z3 encoding of Go IR
+  - Interface dispatch modeling
+  - Goroutine safety checks
+  - Integration with gopls rename/inline verification
+
+Success metric: Can formally validate 70% of pure Go functions within
+a 30-second timeout.
+
+PHASE 6: PRODUCTIZATION (WEEKS 23-30)
+----------------------------------------
+Goal: Production-ready system.
+Deliverables:
+  - Language server protocol (LSP) integration
+  - VS Code extension
+  - GitHub Action for CI
+  - Confidence badge system
+  - Performance optimization (caching, parallel validation)
+  - Documentation
+
+Success metric: End-to-end validation (submit PR, get validation result)
+completes in under 60 seconds for 90% of submitted function pairs.
+
+
+--------------------------------------------------------------------------------
+SECTION 18 — KEY SEARCH TERMS REFERENCE
+--------------------------------------------------------------------------------
+
+TOPIC 1 (TRANSLATION VALIDATION):
+  translation validation source-to-source
+  Alive2 LLVM refinement SMT bounded
+  Necula GCC PLDI 2000 translation validation
+  CompCert semantic preservation verified compiler
+  per-instance validation program pair checking
+  MLIR-TV translation validation multi-level
+  witness annotations simulation relation
+  program refinement checking source
+
+TOPIC 2 (ABSTRACT INTERPRETATION):
+  abstract interpretation over-approximation
+  Cousot Cousot lattice fixpoint POPL 1977
+  ASTRÉE static analyzer C safety-critical
+  SEA string executability eval reflection
+  points-to analysis Python dynamic dispatch
+  abstract domain classification metaprogramming
+  widening narrowing convergence static analysis
+
+TOPIC 3 (RELATIONAL VERIFICATION):
+  product program relational verification Barthe
+  semantic program alignment equivalence Churchill
+  regression verification SymDiff differential
+  Coeus reinforcement learning relational
+  hyperproperties k-safety self-composition
+  bounded relational verification Z3 SMT
+
+TOPIC 4 (CEGIS / REPAIR):
+  CEGIS counterexample guided inductive synthesis
+  SyGuS syntax guided synthesis competition
+  SemGuS semantics guided synthesis CHC
+  S3 syntax semantic guided repair FSE 2017
+  CEGIS(T) theories non-trivial constants
+  bounded program repair DSL search
+
+TOPIC 5 (E-GRAPHS):
+  egg equality saturation POPL 2021
+  egglog datalog equality saturation incremental
+  phase ordering problem rewriting
+  e-class analysis domain-specific
+  equality saturation extraction cost function
+  TASO e-graph tensor optimization
+
+TOPIC 6 (PYTHON SEMANTICS):
+  LibCST codemods TypeInferenceProvider
+  pyright programmatic API type inference
+  CrossHair diff_behavior behavioral equivalence
+  mypy daemon incremental type checking
+  Python symbolic execution Z3 contracts
+  Hypothesis CrossHair backend symbolic
+
+TOPIC 7 (GO TOOLING):
+  gopls rename refactor internals golang.org/x/tools
+  go/types compiler type checker library
+  gorename satisfy interface constraint
+  Go SSA golang.org/x/tools/go/ssa
+  go/packages load type checked programs
+  Go unsafe package static detection
+
+TOPIC 8 (PROPERTY-BASED / FUZZ):
+  differential testing program transformation
+  metamorphic testing source code transformation
+  Hypothesis property-based testing equivalence
+  coverage-guided fuzzing semantic differential
+  Go fuzzing testing.F behavioral equivalence
+  delta debugging shrinking counterexamples
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+Total length: comprehensive research + full app development guide
+Last updated: April 2026
+For: RefactorPilot development team
+
+All papers cited can be found via:
+  - ACM Digital Library: dl.acm.org
+  - arXiv: arxiv.org
+  - Semantic Scholar: semanticscholar.org
+  - DBLP: dblp.org
+
+Key GitHub repositories:
+  - github.com/AliveToolkit/alive2
+  - github.com/egraphs-good/egg
+  - github.com/egraphs-good/egglog
+  - github.com/Instagram/LibCST
+  - github.com/pschanely/CrossHair
+  - github.com/microsoft/pyright
+  - github.com/golang/tools (gopls, go/types, refactor/satisfy)
+  - semgus.org (SemGuS toolkit)
+  - alive2.llvm.org/ce/ (Alive2 online demo)
+================================================================================

@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\stubs_parser.py
+# hypothesis_version: 6.151.10
+
+['(', '(?<![\\.\\w])', ')', ',', '.', 'AsyncIterator', 'Collection', 'Error:', 'Iterator', 'Not able to import', 'Self', 'SupportsAnext', 'SupportsNext', 'TypeVar', 'Union[', 'Union[]', '[', '\\[', ']', '__module__', '__qualname__', '__self__', '_typeshed', 'classmethod', 'collections.abc', 'from', 'sys.', 'typing', 'typing.', 'typing.Set[', '|']

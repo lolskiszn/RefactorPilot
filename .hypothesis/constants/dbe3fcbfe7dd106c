@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\util.py
+# hypothesis_version: 6.151.10
+
+[1024, ' Stack trace:\n', ', ', '.', '.py', '0', '1', ':', ':=', '<>.', '<unable to repr>', '<unknown file>', 'CrossHairInternal:', 'IgnoreAttempt stack:', 'Repr failed at:', 'Repr failed, ', 'WARNING:', '[],', '\\b_ch_efr_\\d+_\\b', '_T', '__args__', '__dict__', '__func__', '__hash__', '__init__', '__init__.py', '__name__', '__objclass__', '__origin__', '__slots__', '__wrapped__', 'builtins', 'darwin', 'object()', 'value', '{', '{:06.3f}|{}|{}() {}', '}']

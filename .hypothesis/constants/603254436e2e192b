@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\opcode_intercept.py
+# hypothesis_version: 6.151.10
+
+[256, 'BINARY_MODULO', 'BINARY_OP', 'BINARY_SLICE', 'BINARY_SUBSCR', 'BUILD_STRING', 'COMPARE_OP', 'CONTAINS_OP', 'CONVERT_VALUE', 'FORMAT_VALUE', 'IS_OP', 'LOAD_COMMON_CONSTANT', 'MAP_ADD', 'SET_ADD', 'TO_BOOL', 'UNARY_NOT', 'in', 'is', 'is not', 'item_', 'multi_subscript', 'not in']

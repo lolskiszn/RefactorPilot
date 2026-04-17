@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\condition_parser.py
+# hypothesis_version: 6.151.10
+
+[' and ', '"""', '#', "'''", '(', '(\'\'\'|""")\\s*(#.*)?$', ')', ') or (', ',', '.', '<string>', 'OLD', 'Using parsers: ', '^(\\s*)(.*?)\\s*$', '^\\s*r?(\'\'\'|""")', '_', '__', '__annotate__', '__annotate_func__', '__del__', '__delattr__', '__doc__', '__init__', '__invariants__', '__module__', '__new__', '__old__', '__postconditions__', '__preconditions__', '__replace__', '__repr__', '__return__', '__setattr__', '_test', 'calltree parser', 'col_offset', 'crosshair.', 'end_lineno', 'eval', 'implies', 'inv', 'invariant', 'lineno', 'network', 'post', 'postcondition', 'pre', 'precondition', 'result', 'self', 'stdin', 'syscall', 'typing', 'write']

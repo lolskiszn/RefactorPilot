@@ -1,0 +1,4 @@
+# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\libimpl\jsonlib.py
+# hypothesis_version: 6.151.10
+
+[b'[\x80-\xff]', 1023, 55296, 56319, 56320, 57343, 65536, '\x08', '"', '([\\\\"]|[^\\ -~])', ',', ', ', '-', '-Infinity', '-inf', '/', ':', ': ', 'Expecting value', 'Extra data', 'I', 'Infinity', 'N', 'NaN', '[', '[ \\t\\n\\r]*', '[]', '\\', '\\"', '\\\\', '\\b', '\\f', '\\n', '\\r', '\\t', '\\u', '\\u{0:04x}', '\\u{0:04x}\\u{1:04x}', ']', 'b', 'f', 'false', 'inf', 'n', 'nan', 'null', 'object_hook', 'object_pairs_hook', 'parse_constant', 'parse_float', 'parse_int', 'r', 'surrogatepass', 't', 'true', 'u', 'utf-16', 'utf-16-be', 'utf-16-le', 'utf-32', 'utf-32-be', 'utf-32-le', 'utf-8', 'utf-8-sig', 'xX', '{', '{}', '}', '\ufeff']
