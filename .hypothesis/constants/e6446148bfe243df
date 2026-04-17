@@ -1,4 +1,0 @@
-# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\auditwall.py
-# hypothesis_version: 6.151.10
-
-['.', '/dev/null', ':', 'EVERYTHING', '_aix_support', 'ctypes', 'fcntl', 'ftplib', 'glob', 'glob.glob', 'imaplib', 'msvcrt', 'msvcrt.get_osfhandle', 'msvcrt.heapmin', 'msvcrt.kbhit', 'msvcrt.setmode', 'nntplib', 'nul', 'open', 'os', 'os.chdir', 'os.fwalk', 'os.getxattr', 'os.listdir', 'os.listxattr', 'os.posix_spawn', 'os.putenv', 'os.scandir', 'os.unsetenv', 'os.walk', 'pathlib', 'pathlib.Path.glob', 'platform', 'poplib', 'shutil', 'smtplib', 'socket', 'socket.__new__', 'socket.bind', 'socket.connect', 'socket.gethostbyname', 'sqlite3', 'subprocess', 'subprocess.Popen', 'telnetlib', 'urllib', 'uuid', 'webbrowser', 'winreg.CreateKey', 'winreg.DeleteKey', 'winreg.DeleteValue', 'winreg.SaveKey', 'winreg.SetValue']

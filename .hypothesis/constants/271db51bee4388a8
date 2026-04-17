@@ -1,4 +1,0 @@
-# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\type_repo.py
-# hypothesis_version: 6.151.10
-
-['.', '__copy___', '__deepcopy__', '__reduce__', '__reduce_ex__', 'crosshair', 'exception', 'hypothesis', 'no', 'numpy', 'optional_bool', 'pkg_resources', 'py', 'pytest', 'pytype_sort', 'pytype_sort_subtype', 'yes', 'z3']

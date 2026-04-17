@@ -3,37 +3,37 @@
 [![npm version](https://img.shields.io/npm/v/refactor-pilot)](https://www.npmjs.com/package/refactor-pilot)
 ![node](https://img.shields.io/badge/node-%3E%3D20-339933)
 [![license](https://img.shields.io/npm/l/refactor-pilot)](./LICENSE)
-[![launch readiness](https://img.shields.io/badge/launch-preview--first-0ea5e9)](./docs/LAUNCH_READINESS.md)
+[![launch readiness](https://img.shields.io/badge/status-alpha-0ea5e9)](./docs/LAUNCH_READINESS.md)
 
 Preview-first architectural refactoring for Go, Python, and TypeScript.
 
-RefactorPilot helps you analyze cross-language changes, preview migration impact, generate assisted transformation artifacts, and apply safe edits with rollback-minded guardrails.
+RefactorPilot helps teams analyze boundary changes, preview impact across mixed-language codebases, and apply guarded migrations with verification loops instead of blind search-and-replace.
 
-## Why
+## What It Does
 
-Most refactoring tools stop at single-file rename or blind text replacement. RefactorPilot is built for boundary changes:
+RefactorPilot is strongest when the change crosses service or contract boundaries:
 
 - API contract rename across languages
 - preview-first migration planning
-- assisted REST to gRPC migration on the supported golden path
-- ambiguity handling, dynamic analysis, and verified transformation loops
+- assisted `REST -> gRPC` migration on the supported path
+- ambiguity handling with explicit user-visible risk
+- verified transformation gates before write mode
 
-## Status
+## Current Positioning
 
-RefactorPilot is ready for a preview-first open source launch.
+This repository should be treated as an **alpha / research-heavy developer tool**, not a universal one-click migration engine.
 
-Current measured confidence is tracked in [docs/LAUNCH_READINESS.md](./docs/LAUNCH_READINESS.md).
+Best current use cases:
 
-- Safe behavior on complex codebases: `93%`
-- Useful preview and impact analysis on complex codebases: `86%`
-- Fully automatic complex `REST -> gRPC` success without manual intervention: `70%`
+- safe preview and planning for contract-aware renames
+- mixed-language impact analysis for Go, Python, and TypeScript workspaces
+- assisted migration flows with verification and rollback-minded guardrails
 
-Best current positioning:
+What it is **not** claiming yet:
 
-- excellent at safe API contract rename across supported languages
-- strong at preview-first migration analysis with explicit safety rails
-- promising at assisted `REST -> gRPC` migration for the supported golden path
-- not yet a universal one-click transformer for arbitrary production services
+- universal automatic migration for arbitrary production systems
+- full mathematical guarantees for all code
+- finished production-grade support for every framework pattern
 
 ## Installation
 
@@ -57,16 +57,15 @@ Requirements:
 
 - Node.js `20+`
 
-## Quick start
+## Quick Start
 
-### Verify the install
+### Scan a workspace
 
 ```bash
-refactorpilot doctor
 refactorpilot scan .
 ```
 
-### Preview a cross-language rename
+### Preview an API contract rename
 
 ```bash
 refactorpilot preview . --field user_id --to account_id
@@ -74,210 +73,95 @@ refactorpilot preview . --field user_id --to account_id --auto-resolve
 refactorpilot preview . --field user_id --to account_id --dynamic-analysis
 ```
 
-### Apply safely
+### Run the migration-first surface
+
+```bash
+refactorpilot migrate api-contract . --from user_id --to account_id
+```
+
+### Apply with a guardrail-first flow
 
 ```bash
 refactorpilot apply . --field user_id --to account_id --mode dry-run
 refactorpilot apply . --field user_id --to account_id --mode write
 ```
 
-### Try the golden path REST to gRPC flow
+### Explore protocol migration
 
 ```bash
-refactorpilot preview ./examples/rest-to-grpc-full --pattern rest-to-grpc-full
-refactorpilot apply ./examples/rest-to-grpc-full --pattern rest-to-grpc-full --strategy bluegreen --confirm-production
+refactorpilot migrate protocol . --from rest --to grpc --json
 ```
 
-## Common workflows
+## CLI Surface
 
-### 1. Scan a repo
+Primary commands:
+
+- `scan <workspace>`
+- `migrate api-contract <workspace> --from <old> --to <new>`
+- `migrate protocol <workspace> --from rest --to grpc`
+- `plan-rename <workspace> --field <old> --to <new>`
+- `preview <workspace> --field <old> --to <new>`
+- `apply <workspace> --field <old> --to <new>`
+- `patterns`
+- `doctor`
+- `verify <workspace>`
+- `serve <workspace>`
+
+See [docs/cli.md](./docs/cli.md) for the fuller command guide.
+
+## Verification and Safety
+
+RefactorPilot is designed around a preview-and-verify workflow:
+
+- inspect impact before write mode
+- surface ambiguity instead of guessing silently
+- use differential and verification checks on supported flows
+- keep deployment-aware apply paths behind explicit confirmation flags
+
+That means the tool is intentionally conservative. It prefers an explicit stop over an unsafe rewrite.
+
+## Repository Scope
+
+This public repository contains:
+
+- runtime source
+- CLI surfaces
+- verification and testing code
+- examples and docs needed to understand the current product envelope
+
+It intentionally leaves out private research notes, local caches, and optional internal toolchain workspace artifacts that are not required for the normal app path.
+
+## Limitations
+
+- framework support is selective and still evolving
+- some flows remain heuristic or preview-oriented
+- large production codebases may need human review around ambiguous cases
+- protocol migration support is stronger on supported patterns than on arbitrary service shapes
+
+## Development
+
+Run the full verification suite:
 
 ```bash
-refactorpilot scan ./my-service
+node ./tests/run-tests.js
 ```
 
-### 2. Plan a contract rename
-
-```bash
-refactorpilot migrate api-contract ./my-service --from user_id --to account_id
-```
-
-### 3. Export a reviewable HTML report
-
-```bash
-refactorpilot preview ./my-service --field user_id --to account_id --format html --output report.html
-```
-
-### 4. Preview a pattern-driven migration
-
-```bash
-refactorpilot preview ./examples/rest-to-grpc-full --pattern rest-to-grpc-full
-```
-
-### 5. Start the local review app
-
-```bash
-refactorpilot serve .
-```
-
-## CLI overview
-
-### `scan <workspace>`
-
-Scan the workspace and build the shared graph model.
-
-### `plan-rename <workspace> --field <old> --to <new>`
-
-Legacy alias for contract migration planning.
-
-### `migrate api-contract <workspace> --from <old> --to <new>`
-
-Build a preview-first API contract migration plan with:
-
-- impacted files
-- symbol and field matches
-- proposed text replacements
-- explanation paths
-- confidence and validation results
-
-### `preview <workspace> --field <old> --to <new>`
-
-Preview a rename without writing changes.
-
-Helpful flags:
-
-- `--auto-resolve`
-- `--dynamic-analysis`
-- `--interactive`
-- `--format html`
-
-### `apply <workspace> --field <old> --to <new>`
-
-Run the guarded apply path.
-
-Modes:
-
-- `--mode dry-run`
-- `--mode write`
-- `--mode sandbox`
-
-### `preview <workspace> --pattern <pattern-id>`
-
-Preview a plugin-backed migration pattern.
-
-Important built-ins:
-
-- `api-contract-rename`
-- `rest-to-grpc`
-- `rest-to-grpc-full`
-
-### `apply <workspace> --pattern <pattern-id>`
-
-Apply a pattern-backed migration when supported.
-
-Helpful flags:
-
-- `--strategy bluegreen`
-- `--confirm-production`
-- `--require-verified`
-
-### `patterns`
-
-List available migration patterns.
-
-### `doctor`
-
-Print a quick system and trust report.
-
-### `verify <workspace>`
-
-Inspect build, test, and verification hooks in a workspace.
-
-### `serve <workspace>`
-
-Start the local web review app.
-
-## What it does well today
-
-- Go structs, JSON tags, handlers, and field access
-- Python functions, classes, route handlers, JSON/key access, and HTTP usage
-- TypeScript interface/property impact analysis
-- cross-language payload-field rename
-- guarded apply with validation, backups, and rollback
-- ambiguity resolution
-- dynamic-impact expansion
-- verified transformation with bounded auto-repair
-- plugin extension points for patterns, language frontends, and deployment strategies
-
-## Safety model
-
-RefactorPilot is intentionally preview-first.
-
-- low-confidence plans are blocked
-- ambiguous cases are resolved interactively or downgraded
-- risky dynamic or unsupported cases degrade to warning/block behavior
-- apply paths keep backups and rollback support
-- verified transformation is required for the strongest automation path
-
-## Validation
-
-The repo includes:
-
-- core engine and web checks
-- 252 rename scenarios
-- 216 ambiguity auto-resolve scenarios
-- 90 dynamic-analysis scenarios
-- 288 verification scenarios
-- framework-shaped launch matrices
-- unsupported/degraded safety checks
-
-Launch-specific verification:
+Useful scripts:
 
 ```bash
 npm test
-node ./tests/transformers/launch-readiness-matrix.test.js
-node ./tests/transformers/unsupported-patterns.test.js
-node ./benchmarks/run.js --json --auto-resolve --dynamic-analysis
+npm run bench
+npm run verify:standalone
 ```
 
-Release process and preflight checks live in [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md).
+## Docs
 
-## Examples
-
-- `examples/go-typescript-field-rename`
-- `examples/rest-to-grpc-full`
-- `examples/complex-service`
-- `examples/verified-migration`
-
-## Project layout
-
-- `src/core` - IR model and graph building
-- `src/engine` - planning, confidence, validation, apply, and verification
-- `src/frontends` - language analysis
-- `src/orchestration` - workspace scan and migration planning
-- `src/plugins` - plugin registry and loading
-- `src/cli` - CLI entrypoint
-- `src/web` - local review app
-- `patterns` - built-in richer pattern plugins
-- `packages/language-sdk` - helper SDK for community extensions
-- `benchmarks` - benchmark harness and fixture suites
-- `tests` - test coverage and scenario matrices
-
-## Contributing
-
-Project health and contributor docs:
-
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [docs/cli.md](./docs/cli.md)
+- [docs/LAUNCH_READINESS.md](./docs/LAUNCH_READINESS.md)
+- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md)
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
-- [SECURITY.md](./SECURITY.md)
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
-- [docs/PLUGINS.md](./docs/PLUGINS.md)
 
-## Honest boundaries
+## License
 
-RefactorPilot is not yet:
-
-- a compiler-grade universal transformer
-- a formal behavioral proof system
-- a guaranteed one-click migration tool for every production service
-
-It is a strong preview-first assistant that analyzes, explains, generates, verifies, repairs simple mechanical issues, and blocks or downgrades risky cases instead of guessing.
+[MIT](./LICENSE)

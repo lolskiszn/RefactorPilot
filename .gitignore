@@ -2,3 +2,16 @@ node_modules/
 coverage/
 dist/
 tmp/
+.hypothesis/
+.npm-cache/
+.publish-prefix/
+go-core/.gocache/
+go-core/*.exe
+toolchain/
+
+# Private/internal research and planning artifacts kept locally.
+absolute vision.txt
+refactor prd.txt
+what next.txt
+deep-research-report.md
+refactorpilot-full-research.txt

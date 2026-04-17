@@ -1,4 +1,0 @@
-# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\statespace.py
-# hypothesis_version: 6.151.10
-
-[0.0, 1e-06, 0.1, 0.999999, 1.0, 2.0, 4.0, 10000.0, 1000, 1801243388510242075, '  Traceback: ', ' : exhausted', ' choices.', ' | ', ' |\\    ', ', ', ': Created new. ', ': Found existing. ', '==', 'Current stack tail:', 'Heap key lookup ', 'HeapRef', 'NodeLike', 'NodeStem()', 'Previous stack tail:', 'Realized at', 'SearchTreeNode', 'SnapshotRef', 'StateSpace', 'WorstResultNode', '\\s+', '_N', '_T', '_{:x}', 'cannot_confirm', 'child', 'confirmed', 'exec_err', 'expr', 'fork', 'id:', 'import_err', 'is possible?', 'iteration', 'mbqi', 'neg_ct', 'negative', 'n|\\ y  ', 'pos_ct', 'positive', 'post_err', 'post_fail', 'pre_unsat', 'py_value', 'random-seed', 'smt', 'smt.random-seed', 'space', 'stacktail', 'syntax_err', 'type:', 'var', '{', '}']

@@ -1,47 +1,94 @@
 # RefactorPilot CLI
 
-RefactorPilot starts with a preview-oriented CLI that scans a workspace, invokes language frontends, builds a lightweight dependency graph, and reports the blast radius for an API contract migration.
+RefactorPilot exposes a preview-first CLI for structural scanning, contract-aware rename planning, and assisted migration workflows.
 
-## Usage
+## Help
 
 ```bash
-node src/cli/index.js migrate api-contract . --from oldField --to newField
+refactorpilot --help
 ```
 
-Optional flags:
+Current top-level surface:
 
-- `--json` emits the preview report as machine-readable JSON.
-- `--help` prints the command reference.
+- `scan <workspace>`
+- `migrate api-contract <workspace> --from <old> --to <new>`
+- `migrate protocol <workspace> --from rest --to grpc`
+- `plan-rename <workspace> --field <old> --to <new>`
+- `preview <workspace> --field <old> --to <new>`
+- `preview <workspace> --pattern <pattern-id>`
+- `apply <workspace> --field <old> --to <new>`
+- `apply <workspace> --pattern <pattern-id>`
+- `patterns`
+- `doctor`
+- `verify <workspace>`
+- `serve <workspace>`
 
-## What The Preview Does
+## Common Flows
 
-The orchestration layer performs four steps:
+### Scan a workspace
 
-1. Scan the workspace for supported source files.
-2. Invoke the active frontends for each file.
-3. Build a file-to-symbol dependency graph from fields, references, and imports.
-4. Produce a preview report that highlights files likely to change.
+```bash
+refactorpilot scan .
+```
 
-The CLI exposes a migration-first surface:
+Use this to get a structural summary and basic graph information before planning a change.
 
-- `scan <workspace>` prints a structural summary and graph counts.
-- `migrate api-contract <workspace> --from <old> --to <new>` is the primary UX for contract migrations.
-- `plan-rename <workspace> --field <old> --to <new>` emits a JSON rename plan as a legacy alias.
-- `preview <workspace> --field <old> --to <new>` prints the human-readable report.
-- `apply <workspace> --field <old> --to <new> --mode dry-run|write>` performs guarded apply when you are ready.
+### Preview a contract rename
 
-This first scaffold is intentionally conservative. It is designed to be useful for contract-aware work across Go and Python while leaving room for richer semantic frontends later.
+```bash
+refactorpilot preview . --field user_id --to account_id
+```
 
-`migrate api-contract` is the preferred user-facing workflow. `plan-rename` remains available for lower-level direct rename planning.
+Helpful flags:
 
-The migration report now highlights:
+- `--json`
+- `--format html`
+- `--output PATH`
+- `--interactive`
+- `--auto-resolve`
+- `--dynamic-analysis`
 
-- impact surface
-- risk assessment
-- why it matters
+### Migration-first rename UX
 
-## Limitations
+```bash
+refactorpilot migrate api-contract . --from user_id --to account_id
+```
 
-- The frontends are heuristic-based and do not parse full language syntax.
-- The graph is file-centric, not a full code property graph yet.
-- The CLI only previews the change; it does not rewrite files.
+This is the preferred user-facing entry point for contract rename workflows.
+
+### Apply with guardrails
+
+```bash
+refactorpilot apply . --field user_id --to account_id --mode dry-run
+refactorpilot apply . --field user_id --to account_id --mode write
+```
+
+For plugin-backed pattern apply:
+
+```bash
+refactorpilot apply . --pattern rest-to-grpc --strategy bluegreen --confirm-production
+```
+
+### Protocol migration
+
+```bash
+refactorpilot migrate protocol . --from rest --to grpc --json
+```
+
+## Important Flags
+
+- `--json` emits machine-readable output
+- `--format html` writes an HTML preview
+- `--interactive` prompts through ambiguity
+- `--auto-resolve` attempts safe non-interactive ambiguity resolution
+- `--dynamic-analysis` expands impact detection with runtime-style heuristics
+- `--allow-schema-change` permits apply when database-side effects are detected
+- `--require-verified` blocks pattern apply unless verification passes
+- `--replay-fixture PATH` uses replay data for differential testing
+- `--equivalence strict|semantic|schema-only` tunes comparison strictness
+
+## Notes
+
+- `plan-rename` remains available as a lower-level alias for direct rename planning.
+- The CLI is intentionally conservative and preview-oriented.
+- For large or ambiguous workspaces, prefer preview and verification before write mode.

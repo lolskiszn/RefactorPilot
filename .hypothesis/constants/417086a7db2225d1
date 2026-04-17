@@ -1,4 +1,0 @@
-# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\z3\z3core.py
-# hypothesis_version: 6.151.10
-
-['    import builtins', '.', '3', ':', ';', 'PATH', 'PYTHONPATH', 'Z3_LIBRARY_PATH', 'Z3_LIB_DIRS', 'cygwin', 'darwin', 'dll', 'dylib', 'latin-1', 'lib', 'libz3.%s', 'libz3.%s not found.', 'so', 'win32', 'z3']

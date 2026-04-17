@@ -1,4 +1,0 @@
-# file: C:\Users\geeme\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\crosshair\enforce.py
-# hypothesis_version: 6.151.10
-
-[',', '/', '/ast.py', '/contextlib.py', '/copy.py', '/copyreg.py', '/crosshair/core.py', '/crosshair/fnutil.py', '/crosshair/util.py', '/enum.py', '/inspect.py', '/linecache.py', '/re.py', '/sre_compile.py', '/sre_parse.py', '/traceback.py', '/typing.py', '/z3.py', '/z3core.py', '/z3printer.py', '/z3types.py', '>', 'EnforcedConditions', '\\', '_', '__init__', '__name__', '__new__', '__old__', '__return__', '_crosshair_wrapper', 'nt', 'self']
